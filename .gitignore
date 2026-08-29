@@ -24,3 +24,6 @@ logs/
 
 # Ensure example settings are NOT ignored
 !appsettings.example.json
+# Encargo y evaluacion: documentos del arnes, no del producto
+ENCARGO.md
+docs/
