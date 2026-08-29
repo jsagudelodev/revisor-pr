@@ -1,0 +1,26 @@
+# Output
+bin/
+obj/
+
+# Test output
+*.trx
+TestResults/
+
+# Agent state
+.argos/
+memoria.db*
+logs/
+
+# IDE/VS
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+
+# Packaging
+*.nupkg
+**/bin/**
+**/obj/
+
+# Ensure example settings are NOT ignored
+!appsettings.example.json
