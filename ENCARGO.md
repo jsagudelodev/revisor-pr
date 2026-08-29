@@ -111,8 +111,14 @@ Los ⏸ **no se tocan** en V1.
   De la lista de PRs abiertos, quedarse solo con los que tienen un commit que aún
   no se revisó. En la primera vuelta sobre un repositorio nuevo **no revisa el
   histórico entero**: solo lo abierto de ahora en adelante.
-  *Cierre:* test con un PR nuevo, uno ya revisado y uno con commit nuevo sobre
-  una revisión previa.
+  *Cierre:* (1) existe una pieza propia que, dada la lista de PRs abiertos y lo ya
+  revisado, decide cuáles hay que revisar; (2) tests de **los tres casos**: PR
+  nuevo → se revisa; PR ya revisado sin cambios → NO se revisa; PR con commit
+  nuevo sobre una revisión previa → se revisa; (3) un test de la primera vuelta
+  sobre un repositorio nuevo que demuestre que **no** se devuelve el histórico
+  entero; (4) los tests corren sin red y sin esperas reales; (5) `dotnet build`
+  sin warnings, `dotnet test` en verde y commit con Conventional Commits, sin
+  `bin`, `obj`, `.argos`, `logs` ni `.trx`.
 
 - ⬜ **RV.3 — Evento normalizado.**
   De la respuesta cruda de Bitbucket a un tipo propio

@@ -10,11 +10,13 @@ public class ResultadoVuelta
 public class EjecutorVuelta : IEjecutorVuelta
 {
     private readonly ILogger<EjecutorVuelta> _logger;
+    private readonly ILogger<DecisorRevisar> _loggerDecisor;
     private readonly ConfiguracionSondeo _configuracion;
 
-    public EjecutorVuelta(ILogger<EjecutorVuelta> logger, ConfiguracionSondeo configuracion)
+    public EjecutorVuelta(ILogger<EjecutorVuelta> logger, ILogger<DecisorRevisar> loggerDecisor, ConfiguracionSondeo configuracion)
     {
         _logger = logger;
+        _loggerDecisor = loggerDecisor;
         _configuracion = configuracion;
     }
 
@@ -27,12 +29,27 @@ public class EjecutorVuelta : IEjecutorVuelta
                 _configuracion.Repositorios.Length);
         }
 
-        // RV.1 deja la vuelta como un esqueleto: las acciones reales llegan en RV.2+ (RV.3, RV.4, RV.5).
-        // Se publica el resultado para que el siguiente ítem pueda empezar a rellenarlo sin tocar el bucle.
+        var decisor = new DecisorRevisar(new LoggerFactory().CreateLogger<DecisorRevisar>());
+
+        // Ejemplo simulado de PRs abiertos para esta vuelta
+        var prsAbiertos = new List<PullRequest>
+        {
+            new PullRequest("repo/uno", 1, "commit123"),
+            new PullRequest("repo/uno", 2, "commit456"),
+            new PullRequest("repo/dos", 1, "commit789"),
+        };
+
+        var prsParaRevisar = decisor.FiltrarPrsParaRevisar(prsAbiertos).ToList();
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation($"Se procesan {prsParaRevisar.Count} PR(s) para revisión.");
+        }
+
         ResultadoVuelta resultado = new()
         {
-            PrsRevisados = 0,
-            PrsOmitidos = 0,
+            PrsRevisados = prsParaRevisar.Count,
+            PrsOmitidos = prsAbiertos.Count - prsParaRevisar.Count,
             PrsFallidos = 0,
         };
 
