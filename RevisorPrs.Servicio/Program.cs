@@ -17,6 +17,7 @@ builder.Services.AddSingleton<IReloj, RelojSistema>();
 builder.Services.AddSingleton<IEjecutorVuelta, EjecutorVuelta>();
 builder.Services.AddSingleton<TraductorEventoPr>();
 builder.Services.AddHttpClient<IClienteBitbucket, ClienteBitbucket>();
+builder.Services.AddHttpClient<IRevisor, Revisor>();
 builder.Services.AddHostedService<Worker>();
 
 var host = builder.Build();
