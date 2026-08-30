@@ -111,6 +111,70 @@ public class ClienteBitbucket : IClienteBitbucket
         }
     }
 
+    public async Task PublicarComentario(string repositorio, int numero, Hallazgo hallazgo)
+    {
+        if (string.IsNullOrEmpty(repositorio))
+        {
+            _logger.LogWarning("Repositorio no especificado para publicar comentario.");
+            return;
+        }
+
+        string url = $"https://api.bitbucket.org/2.0/repositories/{repositorio}/pullrequests/{numero}/comments";
+
+        object payload;
+        if (!string.IsNullOrEmpty(hallazgo.Archivo) && hallazgo.Linea.HasValue)
+        {
+            payload = new
+            {
+                content = new
+                {
+                    raw = hallazgo.Resumen
+                },
+                inline = new
+                {
+                    path = hallazgo.Archivo,
+                    to = hallazgo.Linea.Value
+                }
+            };
+        }
+        else
+        {
+            var lineNumber = hallazgo.Linea ?? 0;
+            payload = new
+            {
+                content = new
+                {
+                    raw = $"{hallazgo.Archivo}:{lineNumber} {hallazgo.Resumen}"
+                }
+            };
+        }
+
+        var json = JsonSerializer.Serialize(payload);
+        var requestMsg = new HttpRequestMessage(HttpMethod.Post, url);
+        PonerAutenticacionBasica(requestMsg);
+        requestMsg.Content = new StringContent(json, Encoding.UTF8, "application/json");
+
+        try
+        {
+            var response = await _httpClient.SendAsync(requestMsg);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Error al publicar comentario en Bitbucket: {StatusCode} para {Repo} PR #{Numero}",
+                    (int)response.StatusCode, repositorio, numero);
+            }
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Excepción de red al publicar comentario en Bitbucket para {Repo} PR #{Numero}",
+                repositorio, numero);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error inesperado al publicar comentario en Bitbucket para {Repo} PR #{Numero}",
+                repositorio, numero);
+        }
+    }
+
     private void PonerAutenticacionBasica(HttpRequestMessage request)
     {
         if (!string.IsNullOrEmpty(_config.Usuario) && !string.IsNullOrEmpty(_config.ClaveAplicacion))

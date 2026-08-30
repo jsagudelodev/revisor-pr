@@ -1,1 +1,2 @@
 RV.3 completado: Implementado tipo EventoPr y mapper EventoPrMapper con tests que verifican mapeo correcto y descarte seguro.
+RV.5: Se implementó ObtenerDiff y sus tests; la ejecución real contra un PR permanece pendiente por falta de app password.
