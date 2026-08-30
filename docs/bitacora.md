@@ -1,0 +1,1 @@
+RV.3 completado: Implementado tipo EventoPr y mapper EventoPrMapper con tests que verifican mapeo correcto y descarte seguro.
