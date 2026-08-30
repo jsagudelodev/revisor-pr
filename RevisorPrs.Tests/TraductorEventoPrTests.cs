@@ -55,7 +55,7 @@ public class TraductorEventoPrTests
     }
 
     [Fact]
-    public void TraducirLista_JsonArray_ReturnsMappedEvents()
+    public void TraducirLista_ConArrayJson_DevuelveLosEventosTraducidos()
     {
         // Preparar
         var jsonArray = JsonDocument.Parse(
@@ -123,7 +123,7 @@ public class TraductorEventoPrTests
     }
 
     [Fact]
-    public void Traducir_JsonConCamposFaltantes_ReturnsNull()
+    public void Traducir_ConCamposFaltantes_DevuelveNulo()
     {
         // Preparar - Falta el título
         var json = JsonDocument.Parse(
@@ -157,7 +157,7 @@ public class TraductorEventoPrTests
     }
 
     [Fact]
-    public void Traducir_JsonMalformed_ReturnsNullSinExcepcion()
+    public void Traducir_ConJsonMalformado_DevuelveNuloSinExcepcion()
     {
         // Preparar - JSON con estructura inesperada
         var json = JsonDocument.Parse(
