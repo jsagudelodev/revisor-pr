@@ -21,4 +21,12 @@ public class ConfiguracionLlm
     /// NUNCA se registra en logs.
     /// </summary>
     public string ClaveApi { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Severidad mínima para conservar un hallazgo devuelto por el LLM.
+    /// Severidades reconocidas (de menor a mayor): "baja", "media", "alta".
+    /// Los hallazgos con severidad estrictamente menor se descartan como ruido.
+    /// Vacío = sin filtrado por severidad (se conservan todos).
+    /// </summary>
+    public string SeveridadMinima { get; set; } = string.Empty;
 }
