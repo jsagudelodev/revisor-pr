@@ -57,8 +57,11 @@ public class RevisorTests
         var revisor = new Revisor(http, config, registrador);
 
         var diff = "diff --git a/src/Calculadora.cs b/src/Calculadora.cs\n+var x = 1/0;";
-        var resultados = await revisor.RevisarAsync(diff);
+        var resultado = await revisor.RevisarAsync(diff);
 
+        Assert.True(resultado.Exito);
+        Assert.Null(resultado.Motivo);
+        var resultados = resultado.Hallazgos;
         Assert.Equal(2, resultados.Count);
 
         Assert.Equal("src/Calculadora.cs", resultados[0].Archivo);

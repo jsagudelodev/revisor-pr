@@ -92,10 +92,10 @@ public class PublicarComentarioTests
         Assert.Single(handler.Requests);
         var request = handler.Requests[0];
         Assert.Equal(HttpMethod.Post, request.Method);
-        Assert.Equal("https://api.bitbucket.org/2.0/repositories/workspace/repo/pullrequests/123/comments", request.RequestUri.ToString());
+        Assert.Equal("https://api.bitbucket.org/2.0/repositories/workspace/repo/pullrequests/123/comments", request.RequestUri!.ToString());
 
         // Ensure content is JSON with inline
-        var content = await request.Content.ReadAsStringAsync();
+        var content = await request.Content!.ReadAsStringAsync();
         JsonDocument doc = JsonDocument.Parse(content);
         var root = doc.RootElement;
 
@@ -107,7 +107,7 @@ public class PublicarComentarioTests
         Assert.True(inlineProp.TryGetProperty("path", out var pathProp));
         Assert.Equal(hallazgo.Archivo, pathProp.GetString());
         Assert.True(inlineProp.TryGetProperty("to", out var toProp));
-        Assert.Equal(hallazgo.Linea.Value, toProp.GetInt32());
+        Assert.Equal(hallazgo.Linea!.Value, toProp.GetInt32());
     }
 
     [Fact]
@@ -127,7 +127,7 @@ public class PublicarComentarioTests
         // Assert
         Assert.Single(handler.Requests);
         var request = handler.Requests[0];
-        var content = await request.Content.ReadAsStringAsync();
+        var content = await request.Content!.ReadAsStringAsync();
         JsonDocument doc = JsonDocument.Parse(content);
         var root = doc.RootElement;
 

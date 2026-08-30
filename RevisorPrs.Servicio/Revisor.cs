@@ -36,25 +36,58 @@ public class Revisor : IRevisor
         _logger = logger;
     }
 
-    public async Task<IReadOnlyList<Hallazgo>> RevisarAsync(string diff, CancellationToken token = default)
+    /// <summary>
+    /// Mensaje explícito que se usa en el reintento para forzar al LLM a devolver
+    /// ÚNICAMENTE un JSON válido (sin prosa alrededor).
+    /// </summary>
+    private const string MensajeReintento =
+        "Tu respuesta anterior no fue un JSON válido. Responde ÚNICAMENTE con un JSON válido que cumpla el formato pedido, sin texto antes ni después.";
+
+    public async Task<ResultadoRevision> RevisarAsync(string diff, CancellationToken token = default)
     {
         if (diff is null)
         {
             throw new ArgumentNullException(nameof(diff));
         }
 
-        var respuesta = await EnviarAlLlmAsync(diff, token);
-        return TraducirRespuesta(respuesta);
+        // Primer intento con el prompt habitual.
+        var contenidoCrudo = await EnviarAlLlmAsync(diff, PromptRevision.Mensaje, token);
+        var (ok, json, motivo) = IntentarExtraerJson(contenidoCrudo);
+        if (ok)
+        {
+            return ResultadoRevision.Ok(ParsearHallazgos(json!));
+        }
+
+        // Un único reintento pidiendo explícitamente solo JSON.
+        _logger.LogWarning(
+            "La respuesta del LLM no es JSON válido ({Motivo}). Se reintenta una vez pidiendo solo JSON.",
+            motivo);
+
+        contenidoCrudo = await EnviarAlLlmAsync(diff, MensajeReintento, token);
+        (ok, json, motivo) = IntentarExtraerJson(contenidoCrudo);
+        if (ok)
+        {
+            return ResultadoRevision.Ok(ParsearHallazgos(json!));
+        }
+
+        // Segundo intento también inválido: marcamos el PR como FALLIDO sin hallazgos
+        // para que NUNCA se publique basura.
+        _logger.LogError(
+            "La respuesta del LLM no es JSON válido tras un reintento ({Motivo}). Se marca el PR como fallido.",
+            motivo);
+
+        return ResultadoRevision.Fallo(
+            $"La respuesta del LLM no es JSON válido tras un reintento ({motivo}).");
     }
 
-    private async Task<string> EnviarAlLlmAsync(string diff, CancellationToken token)
+    private async Task<string> EnviarAlLlmAsync(string diff, string mensajeSistema, CancellationToken token)
     {
         var cuerpo = new
         {
             model = _config.Modelo,
             messages = new object[]
             {
-                new { role = "system", content = PromptRevision.Mensaje },
+                new { role = "system", content = mensajeSistema },
                 new { role = "user", content = string.Format(PromptUsuario, diff) },
             },
             response_format = new { type = "json_object" },
@@ -84,7 +117,85 @@ public class Revisor : IRevisor
             .GetString() ?? string.Empty;
     }
 
-    private static IReadOnlyList<Hallazgo> TraducirRespuesta(string contenidoJson)
+    /// <summary>
+    /// Intenta extraer un JSON válido de la respuesta cruda del LLM.
+    /// Si viene envuelta en un bloque markdown (```json ... ``` o ``` ... ```),
+    /// se extrae el contenido del bloque sin reintentar: es la forma más común y NO es error.
+    /// El bloque puede estar precedido o seguido de prosa; se busca en cualquier posición.
+    /// Devuelve (true, json, null) si fue posible, o (false, null, motivo) si no.
+    /// </summary>
+    private static (bool Ok, string? Json, string? Motivo) IntentarExtraerJson(string contenidoCrudo)
+    {
+        if (string.IsNullOrWhiteSpace(contenidoCrudo))
+        {
+            return (false, null, "respuesta vacía");
+        }
+
+        var texto = contenidoCrudo.Trim();
+
+        // Si la respuesta cruda NO es JSON, probamos a extraer un bloque markdown
+        // (```json ... ``` o ``` ... ```) que pueda estar en cualquier posición del texto.
+        if (!EsJsonValido(texto))
+        {
+            texto = ExtraerJsonDeBloqueMarkdown(texto);
+        }
+
+        if (EsJsonValido(texto))
+        {
+            return (true, texto, null);
+        }
+
+        return (false, null, "la respuesta no contiene un JSON válido");
+    }
+
+    private static bool EsJsonValido(string texto)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(texto);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Busca un bloque markdown (```json ... ``` o ``` ... ```) en cualquier posición del texto
+    /// y devuelve su contenido interior. Si no encuentra ninguno, devuelve el texto sin cambios.
+    /// </summary>
+    private static string ExtraerJsonDeBloqueMarkdown(string texto)
+    {
+        const string AperturaConLenguaje = "```json";
+        const string AperturaGenerica = "```";
+
+        var indiceApertura = texto.IndexOf(AperturaConLenguaje, StringComparison.OrdinalIgnoreCase);
+        if (indiceApertura < 0)
+        {
+            indiceApertura = texto.IndexOf(AperturaGenerica, StringComparison.Ordinal);
+        }
+        if (indiceApertura < 0)
+        {
+            return texto;
+        }
+
+        var inicioContenido = texto.IndexOf('\n', indiceApertura);
+        if (inicioContenido < 0)
+        {
+            return texto;
+        }
+
+        var finBloque = texto.IndexOf(AperturaGenerica, inicioContenido + 1, StringComparison.Ordinal);
+        if (finBloque < 0)
+        {
+            return texto;
+        }
+
+        return texto.Substring(inicioContenido + 1, finBloque - inicioContenido - 1).Trim();
+    }
+
+    private static IReadOnlyList<Hallazgo> ParsearHallazgos(string contenidoJson)
     {
         if (string.IsNullOrWhiteSpace(contenidoJson))
         {
