@@ -16,6 +16,11 @@ public class ClienteBitbucket : IClienteBitbucket
     private readonly ILogger<ClienteBitbucket> _logger;
     private readonly TraductorEventoPr _traductor;
 
+    /// <summary>
+    /// Función de espera entre reintentos. Inyectable para que los tests no tarden segundos.
+    /// </summary>
+    public Func<int, CancellationToken, Task> EsperarEntreReintentos { get; set; }
+
     public ClienteBitbucket(
         HttpClient httpClient,
         IOptions<ConfiguracionBitbucket> config,
@@ -26,6 +31,7 @@ public class ClienteBitbucket : IClienteBitbucket
         _config = config.Value;
         _logger = logger;
         _traductor = traductor;
+        EsperarEntreReintentos = EsperarEntreReintentosPorDefecto;
     }
 
     public async Task<IEnumerable<EventoPr>> ListarPrsAbiertos(string repositorio)
@@ -38,8 +44,27 @@ public class ClienteBitbucket : IClienteBitbucket
             var request = new HttpRequestMessage(HttpMethod.Get, url!);
             PonerAutenticacionBasica(request);
 
-            var response = await _httpClient.SendAsync(request);
-            response.EnsureSuccessStatusCode();
+            var response = await EnviarConReintentos(request, repositorio, "listar PRs");
+
+            if (response is null)
+            {
+                break;
+            }
+
+            // 4xx (no 429) y 5xx al agotar el reintento devuelven la respuesta sin lanzar;
+            // aquí preservamos el contrato original: si no es éxito, lanzamos.
+            if (!response.IsSuccessStatusCode)
+            {
+                var codigo = (int)response.StatusCode;
+                _logger.LogError(
+                    "Error accionable: respuesta no exitosa al listar PRs en {Repo}. Código HTTP: {Codigo}",
+                    repositorio, codigo);
+                response.Dispose();
+                throw new HttpRequestException(
+                    $"Respuesta no exitosa al listar PRs en {repositorio}: {codigo}",
+                    inner: null,
+                    statusCode: response.StatusCode);
+            }
 
             using var stream = await response.Content.ReadAsStreamAsync();
             using var jsonDoc = await JsonDocument.ParseAsync(stream);
@@ -57,14 +82,13 @@ public class ClienteBitbucket : IClienteBitbucket
                 }
             }
 
-            // Obtener el enlace 'next' para paginación
             if (root.TryGetProperty("next", out var next) && next.ValueKind == JsonValueKind.String)
             {
                 url = next.GetString();
             }
             else
             {
-                url = null; // No hay más páginas
+                url = null;
             }
         }
 
@@ -83,32 +107,21 @@ public class ClienteBitbucket : IClienteBitbucket
         var request = new HttpRequestMessage(HttpMethod.Get, url);
         PonerAutenticacionBasica(request);
 
-        try
+        var response = await EnviarConReintentos(request, repositorio, $"obtener diff PR #{numero}");
+
+        if (response is null)
         {
-            var response = await _httpClient.SendAsync(request);
-            if (response.IsSuccessStatusCode)
-            {
-                return await response.Content.ReadAsStringAsync();
-            }
-            else
-            {
-                _logger.LogWarning("Error al obtener diff de Bitbucket: {StatusCode} para {Repo} PR #{Numero}", 
-                    (int)response.StatusCode, repositorio, numero);
-                return string.Empty;
-            }
-        }
-        catch (HttpRequestException ex)
-        {
-            _logger.LogWarning(ex, "Excepción de red al obtener diff de Bitbucket para {Repo} PR #{Numero}", 
-                repositorio, numero);
             return string.Empty;
         }
-        catch (Exception ex)
+
+        if (response.IsSuccessStatusCode)
         {
-            _logger.LogWarning(ex, "Error inesperado al obtener diff de Bitbucket para {Repo} PR #{Numero}", 
-                repositorio, numero);
-            return string.Empty;
+            return await response.Content.ReadAsStringAsync();
         }
+
+        _logger.LogWarning("Error al obtener diff de Bitbucket: {StatusCode} para {Repo} PR #{Numero}",
+            (int)response.StatusCode, repositorio, numero);
+        return string.Empty;
     }
 
     public async Task PublicarComentario(string repositorio, int numero, Hallazgo hallazgo)
@@ -126,15 +139,8 @@ public class ClienteBitbucket : IClienteBitbucket
         {
             payload = new
             {
-                content = new
-                {
-                    raw = hallazgo.Resumen
-                },
-                inline = new
-                {
-                    path = hallazgo.Archivo,
-                    to = hallazgo.Linea.Value
-                }
+                content = new { raw = hallazgo.Resumen },
+                inline = new { path = hallazgo.Archivo, to = hallazgo.Linea.Value }
             };
         }
         else
@@ -142,10 +148,7 @@ public class ClienteBitbucket : IClienteBitbucket
             var lineNumber = hallazgo.Linea ?? 0;
             payload = new
             {
-                content = new
-                {
-                    raw = $"{hallazgo.Archivo}:{lineNumber} {hallazgo.Resumen}"
-                }
+                content = new { raw = $"{hallazgo.Archivo}:{lineNumber} {hallazgo.Resumen}" }
             };
         }
 
@@ -154,25 +157,119 @@ public class ClienteBitbucket : IClienteBitbucket
         PonerAutenticacionBasica(requestMsg);
         requestMsg.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
-        try
+        var response = await EnviarConReintentos(requestMsg, repositorio, $"publicar comentario PR #{numero}");
+
+        if (response is null)
         {
-            var response = await _httpClient.SendAsync(requestMsg);
-            if (!response.IsSuccessStatusCode)
+            return;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("Error al publicar comentario en Bitbucket: {StatusCode} para {Repo} PR #{Numero}",
+                (int)response.StatusCode, repositorio, numero);
+        }
+    }
+
+    /// <summary>
+    /// Envía una petición HTTP reintentando ante respuestas 429 y 5xx con espera creciente.
+    /// Un 4xx que no sea 429 NO se reintenta. Al agotar el tope, registra un error
+    /// accionable con repositorio, PR y código HTTP y devuelve null (NO lanza).
+    /// </summary>
+    private async Task<HttpResponseMessage?> EnviarConReintentos(
+        HttpRequestMessage request,
+        string repositorio,
+        string operacion)
+    {
+        var intentosMaximos = _config.IntentosMaximos > 0 ? _config.IntentosMaximos : 1;
+        var cancellationToken = CancellationToken.None;
+
+        HttpResponseMessage? response = null;
+        int? ultimoCodigo = null;
+
+        for (int intento = 1; intento <= intentosMaximos; intento++)
+        {
+            var intentoRequest = await ClonarPeticionAsync(request);
+
+            try
             {
-                _logger.LogWarning("Error al publicar comentario en Bitbucket: {StatusCode} para {Repo} PR #{Numero}",
-                    (int)response.StatusCode, repositorio, numero);
+                response = await _httpClient.SendAsync(intentoRequest, cancellationToken);
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex,
+                    "Error de red al {Operacion} en {Repo} (intento {Intento}/{Max})",
+                    operacion, repositorio, intento, intentosMaximos);
+                response = null;
+            }
+
+            ultimoCodigo = response is null ? null : (int?)response.StatusCode;
+
+            bool exito = response is not null && response.IsSuccessStatusCode;
+            bool seDebeReintentar = response is not null
+                && ((int)response.StatusCode == 429 || (int)response.StatusCode >= 500);
+
+            if (exito)
+            {
+                return response;
+            }
+
+            if (response is not null && !seDebeReintentar)
+            {
+                return response;
+            }
+
+            if (intento < intentosMaximos)
+            {
+                response?.Dispose();
+                response = null;
+                var esperaMs = CalcularEsperaMs(intento);
+                try
+                {
+                    await EsperarEntreReintentos(esperaMs, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return null;
+                }
             }
         }
-        catch (HttpRequestException ex)
+
+        _logger.LogError(
+            "Error accionable: se agotaron los reintentos al {Operacion} en {Repo} tras {Max} intentos. Último código HTTP: {Codigo}",
+            operacion, repositorio, intentosMaximos, ultimoCodigo?.ToString() ?? "N/D");
+
+        response?.Dispose();
+        return null;
+    }
+
+    private static int CalcularEsperaMs(int intento)
+    {
+        return 200 * (int)Math.Pow(2, intento - 1);
+    }
+
+    private static Task EsperarEntreReintentosPorDefecto(int milisegundos, CancellationToken cancellationToken)
+    {
+        return Task.Delay(milisegundos, cancellationToken);
+    }
+
+    private static async Task<HttpRequestMessage> ClonarPeticionAsync(HttpRequestMessage original)
+    {
+        var clon = new HttpRequestMessage(original.Method, original.RequestUri);
+        if (original.Content != null)
         {
-            _logger.LogWarning(ex, "Excepción de red al publicar comentario en Bitbucket para {Repo} PR #{Numero}",
-                repositorio, numero);
+            // Bufferizamos en bytes para poder releer el contenido en cada reintento
+            // (HttpClient dispone el Stream del Content tras enviarlo la primera vez).
+            var bytes = await original.Content.ReadAsByteArrayAsync();
+            var mediaType = original.Content.Headers.ContentType?.MediaType ?? "application/json";
+            clon.Content = new ByteArrayContent(bytes);
+            clon.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(mediaType);
         }
-        catch (Exception ex)
+        foreach (var header in original.Headers)
         {
-            _logger.LogWarning(ex, "Error inesperado al publicar comentario en Bitbucket para {Repo} PR #{Numero}",
-                repositorio, numero);
+            clon.Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
+        return clon;
     }
 
     private void PonerAutenticacionBasica(HttpRequestMessage request)

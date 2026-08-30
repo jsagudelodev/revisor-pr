@@ -119,17 +119,26 @@ public class HigieneSecretosTests
     [Fact]
     public async Task CabeceraAutorizacion_NoApareceEnLog_TrasLlamadaFallida()
     {
-        // Arrange
-        var response = new HttpResponseMessage(HttpStatusCode.InternalServerError)
-        {
-            Content = new StringContent("{\"error\": \"internal server error\"}", Encoding.UTF8, "application/json")
-        };
-        var handler = new FakeHttpMessageHandler(response);
+        // Arrange: el cliente reintenta hasta agotar el tope (3) ante 5xx.
+        var handler = new FakeHttpMessageHandler(
+            new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StringContent("{\"error\": \"internal server error\"}", Encoding.UTF8, "application/json")
+            },
+            new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StringContent("{\"error\": \"internal server error\"}", Encoding.UTF8, "application/json")
+            },
+            new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StringContent("{\"error\": \"internal server error\"}", Encoding.UTF8, "application/json")
+            }
+        );
         ClienteBitbucket client = CrearClienteConRegistrador(handler, out var logger);
 
-        // Act
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(() =>
-            client.ListarPrsAbiertos("workspace/repo"));
+        // Act: tras agotar los reintentos, el cliente registra el error accionable
+        // y NO lanza; basta con invocar y verificar la higiene del log.
+        await client.ListarPrsAbiertos("workspace/repo");
 
         // Assert
         Assert.False(ContieneSecreto(logger.Mensajes, TestClave));

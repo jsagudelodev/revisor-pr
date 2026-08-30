@@ -92,10 +92,12 @@ index e69de29..d2ca2fb 100644
     [Fact]
     public async Task ObtenerDiff_ConErrorDeApi_DevuelveVacioSinLanzar()
     {
-        // Arrange
-        var errorResponse = new HttpResponseMessage(HttpStatusCode.InternalServerError);
-
-        var handler = new FakeHttpMessageHandler(errorResponse);
+        // Arrange: el cliente reintenta hasta agotar el tope (3) ante 5xx.
+        var handler = new FakeHttpMessageHandler(
+            new HttpResponseMessage(HttpStatusCode.InternalServerError),
+            new HttpResponseMessage(HttpStatusCode.InternalServerError),
+            new HttpResponseMessage(HttpStatusCode.InternalServerError)
+        );
         var cliente = CrearCliente(handler);
 
         // Act

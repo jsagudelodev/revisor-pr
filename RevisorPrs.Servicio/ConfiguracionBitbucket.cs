@@ -16,4 +16,9 @@ public class ConfiguracionBitbucket
     /// Contraseña de aplicación de Bitbucket.
     /// </summary>
     public string ClaveAplicacion { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Número máximo de intentos (incluyendo el primero) para llamadas a la API de Bitbucket.
+    /// </summary>
+    public int IntentosMaximos { get; set; } = 3;
 }

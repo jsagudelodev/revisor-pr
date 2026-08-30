@@ -144,8 +144,10 @@ public class PublicarComentarioTests
     [Fact]
     public async Task PublicarComentario_ConErrorDeApi_NoLanza()
     {
-        // Arrange: simulate internal server error
+        // Arrange: simulamos 3 errores 500 seguidos (se agotan los reintentos).
         var handler = new FakeHttpMessageHandler(
+            CreateJsonResponse(new { }, HttpStatusCode.InternalServerError),
+            CreateJsonResponse(new { }, HttpStatusCode.InternalServerError),
             CreateJsonResponse(new { }, HttpStatusCode.InternalServerError)
         );
 
@@ -156,7 +158,7 @@ public class PublicarComentarioTests
         // Should not throw
         await cliente.PublicarComentario("workspace/repo", 789, hallazgo);
 
-        // Assert we made the request
-        Assert.Single(handler.Requests);
+        // Assert: el cliente reintenta hasta agotar el tope sin lanzar.
+        Assert.Equal(3, handler.Requests.Count);
     }
 }
