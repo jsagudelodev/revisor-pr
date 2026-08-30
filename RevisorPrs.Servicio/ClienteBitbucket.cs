@@ -71,6 +71,46 @@ public class ClienteBitbucket : IClienteBitbucket
         return result;
     }
 
+    public async Task<string> ObtenerDiff(string repositorio, int numero)
+    {
+        if (string.IsNullOrEmpty(repositorio))
+        {
+            _logger.LogWarning("Repositorio no especificado para obtener diff.");
+            return string.Empty;
+        }
+
+        string url = $"https://api.bitbucket.org/2.0/repositories/{repositorio}/pullrequests/{numero}/diff";
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        PonerAutenticacionBasica(request);
+
+        try
+        {
+            var response = await _httpClient.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+            {
+                return await response.Content.ReadAsStringAsync();
+            }
+            else
+            {
+                _logger.LogWarning("Error al obtener diff de Bitbucket: {StatusCode} para {Repo} PR #{Numero}", 
+                    (int)response.StatusCode, repositorio, numero);
+                return string.Empty;
+            }
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Excepción de red al obtener diff de Bitbucket para {Repo} PR #{Numero}", 
+                repositorio, numero);
+            return string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error inesperado al obtener diff de Bitbucket para {Repo} PR #{Numero}", 
+                repositorio, numero);
+            return string.Empty;
+        }
+    }
+
     private void PonerAutenticacionBasica(HttpRequestMessage request)
     {
         if (!string.IsNullOrEmpty(_config.Usuario) && !string.IsNullOrEmpty(_config.ClaveAplicacion))
