@@ -5,23 +5,23 @@ using Microsoft.Extensions.Logging;
 namespace RevisorPrs.Servicio;
 
 /// <summary>
-/// Mapea la respuesta cruda de la API de Bitbucket Cloud a EventoPr.
+/// Traduce la respuesta cruda de la API de Bitbucket Cloud a EventoPr.
 /// Los campos que no se entienden se descartan con log, sin lanzar excepción.
 /// </summary>
-public class EventoPrMapper
+public class TraductorEventoPr
 {
-    private readonly ILogger<EventoPrMapper> _logger;
+    private readonly ILogger<TraductorEventoPr> _logger;
 
-    public EventoPrMapper(ILogger<EventoPrMapper> logger)
+    public TraductorEventoPr(ILogger<TraductorEventoPr> logger)
     {
         _logger = logger;
     }
 
     /// <summary>
     /// Convierte un objeto JSON de Bitbucket (representado como JsonElement) a EventoPr.
-    /// Devuelve null si falta algún campo esencial o si ocurre un error de mapeo.
+    /// Devuelve null si falta algún campo esencial o si ocurre un error de traducción.
     /// </summary>
-    public EventoPr? Mapear(JsonElement json)
+    public EventoPr? Traducir(JsonElement json)
     {
         try
         {
@@ -48,7 +48,7 @@ public class EventoPrMapper
                         var repo = partes[4];
                         repositorio = $"{workspace}/{repo}";
                     }
-                    // También considerar el formato de endpoint de API: https://api.bitbucket.org/2.0/repositories/workspace/repo/pullrequest/123
+                    // También considerar el formato de punto de entrada de la API: https://api.bitbucket.org/2.0/repositories/workspace/repo/pullrequest/123
                     else if (partes.Length >= 8 && partes[2] == "api.bitbucket.org" && partes[3] == "2.0" && partes[4] == "repositories")
                     {
                         var workspace = partes[5];
@@ -71,7 +71,7 @@ public class EventoPrMapper
                 }
             }
 
-            // Commit (del source commit hash)
+            // Confirmación (del hash del commit de origen)
             if (json.TryGetProperty("source", out var source) &&
                 source.TryGetProperty("commit", out var commitObj) &&
                 commitObj.TryGetProperty("hash", out var commitHash))
@@ -115,17 +115,17 @@ public class EventoPrMapper
     }
 
     /// <summary>
-    /// Convierte una lista de objetos JSON de Bitbucket a una lista de EventoPr.
-    /// Descarta los que no se pueden mapear.
+    /// Traduce una lista de objetos JSON de Bitbucket a una lista de EventoPr.
+    /// Descarta los que no se pueden traducir.
     /// </summary>
-    public IEnumerable<EventoPr> MapearLista(JsonElement jsonArray)
+    public IEnumerable<EventoPr> TraducirLista(JsonElement jsonArray)
     {
         var resultado = new List<EventoPr>();
         if (jsonArray.ValueKind == JsonValueKind.Array)
         {
             foreach (var element in jsonArray.EnumerateArray())
             {
-                var evento = Mapear(element);
+                var evento = Traducir(element);
                 if (evento != null)
                 {
                     resultado.Add(evento);
@@ -134,4 +134,5 @@ public class EventoPrMapper
         }
         return resultado;
     }
+
 }

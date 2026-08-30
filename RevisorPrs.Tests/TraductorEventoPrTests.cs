@@ -5,25 +5,25 @@ using Xunit;
 
 namespace RevisorPrs.Tests;
 
-public class EventoPrMapperTests
+public class TraductorEventoPrTests
 {
-    private readonly EventoPrMapper _mapper;
+    private readonly TraductorEventoPr _mapper;
 
-    public EventoPrMapperTests()
+    public TraductorEventoPrTests()
     {
-        _mapper = new EventoPrMapper(NullLogger<EventoPrMapper>.Instance);
+        _mapper = new TraductorEventoPr(NullLogger<TraductorEventoPr>.Instance);
     }
 
     [Fact]
-    public void Mapear_JsonValido_CreaEventoPrCorrecto()
+    public void Traducir_JsonValido_CreaEventoPrCorrecto()
     {
-        // Arrange
+        // Preparar
         var json = JsonDocument.Parse(
             """
             {
                 "type": "pullrequest",
                 "id": 123,
-                "title": "Add new feature",
+                "title": "Agregar nueva característica",
                 "links": {
                     "html": {
                         "href": "https://bitbucket.org/workspace/repo/pull-requests/123"
@@ -36,35 +36,35 @@ public class EventoPrMapperTests
                 },
                 "destination": {
                     "branch": {
-                        "name": "main"
+                        "name": "principal"
                     }
                 }
             }
             """).RootElement;
 
-        // Act
-        var resultado = _mapper.Mapear(json);
+        // Actuar
+        var resultado = _mapper.Traducir(json);
 
-        // Assert
+        // Afirmar
         Assert.NotNull(resultado);
         Assert.Equal("workspace/repo", resultado!.Repositorio);
         Assert.Equal(123, resultado.Numero);
         Assert.Equal("a1b2c3d4e5f6789012345678901234567890abcd", resultado.Commit);
-        Assert.Equal("Add new feature", resultado.Titulo);
-        Assert.Equal("main", resultado.Rama);
+        Assert.Equal("Agregar nueva característica", resultado.Titulo);
+        Assert.Equal("principal", resultado.Rama);
     }
 
     [Fact]
-    public void MapearLista_JsonArray_ReturnsMappedEvents()
+    public void TraducirLista_JsonArray_ReturnsMappedEvents()
     {
-        // Arrange
+        // Preparar
         var jsonArray = JsonDocument.Parse(
             """
             [
                 {
                     "type": "pullrequest",
                     "id": 1,
-                    "title": "First PR",
+                    "title": "Primer PR",
                     "links": {
                         "html": {
                             "href": "https://bitbucket.org/workspace/repo/pull-requests/1"
@@ -77,14 +77,14 @@ public class EventoPrMapperTests
                     },
                     "destination": {
                         "branch": {
-                            "name": "main"
+                            "name": "principal"
                         }
                     }
                 },
                 {
                     "type": "pullrequest",
                     "id": 2,
-                    "title": "Second PR",
+                    "title": "Segundo PR",
                     "links": {
                         "html": {
                             "href": "https://bitbucket.org/workspace/repo/pull-requests/2"
@@ -97,35 +97,35 @@ public class EventoPrMapperTests
                     },
                     "destination": {
                         "branch": {
-                            "name": "develop"
+                            "name": "desarrollo"
                         }
                     }
                 }
             ]
             """).RootElement;
 
-        // Act
-        var resultado = _mapper.MapearLista(jsonArray);
+        // Actuar
+        var resultado = _mapper.TraducirLista(jsonArray);
 
-        // Assert
+        // Afirmar
         Assert.Equal(2, resultado.Count());
         Assert.Equal("workspace/repo", resultado.ElementAt(0).Repositorio);
         Assert.Equal(1, resultado.ElementAt(0).Numero);
         Assert.Equal("commit1", resultado.ElementAt(0).Commit);
-        Assert.Equal("First PR", resultado.ElementAt(0).Titulo);
-        Assert.Equal("main", resultado.ElementAt(0).Rama);
+        Assert.Equal("Primer PR", resultado.ElementAt(0).Titulo);
+        Assert.Equal("principal", resultado.ElementAt(0).Rama);
 
         Assert.Equal("workspace/repo", resultado.ElementAt(1).Repositorio);
         Assert.Equal(2, resultado.ElementAt(1).Numero);
         Assert.Equal("commit2", resultado.ElementAt(1).Commit);
-        Assert.Equal("Second PR", resultado.ElementAt(1).Titulo);
-        Assert.Equal("develop", resultado.ElementAt(1).Rama);
+        Assert.Equal("Segundo PR", resultado.ElementAt(1).Titulo);
+        Assert.Equal("desarrollo", resultado.ElementAt(1).Rama);
     }
 
     [Fact]
-    public void Mapear_JsonConCamposFaltantes_ReturnsNull()
+    public void Traducir_JsonConCamposFaltantes_ReturnsNull()
     {
-        // Arrange - Falta el título
+        // Preparar - Falta el título
         var json = JsonDocument.Parse(
             """
             {
@@ -143,34 +143,34 @@ public class EventoPrMapperTests
                 },
                 "destination": {
                     "branch": {
-                        "name": "main"
+                        "name": "principal"
                     }
                 }
             }
             """).RootElement;
 
-        // Act
-        var resultado = _mapper.Mapear(json);
+        // Actuar
+        var resultado = _mapper.Traducir(json);
 
-        // Assert
+        // Afirmar
         Assert.Null(resultado);
     }
 
     [Fact]
-    public void Mapear_JsonMalformed_ReturnsNullWithoutException()
+    public void Traducir_JsonMalformed_ReturnsNullSinExcepcion()
     {
-        // Arrange - JSON con estructura inesperada
+        // Preparar - JSON con estructura inesperada
         var json = JsonDocument.Parse(
             """
             {
-                "unknown": "value"
+                "unknown": "valor"
             }
             """).RootElement;
 
-        // Act
-        var resultado = _mapper.Mapear(json);
+        // Actuar
+        var resultado = _mapper.Traducir(json);
 
-        // Assert
+        // Afirmar
         Assert.Null(resultado);
     }
 }
