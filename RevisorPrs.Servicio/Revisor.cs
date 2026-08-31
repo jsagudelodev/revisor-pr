@@ -37,6 +37,33 @@ public class Revisor : IRevisor
     }
 
     /// <summary>
+    /// Valida la configuración del LLM al arrancar: si falta Endpoint o Modelo,
+    /// el servicio debe fallar FUERTE y con mensaje accionable (regla RV.12).
+    /// La ClaveApi NO es obligatoria en arranque: sin ella, la primera revisión
+    /// fallará con un 401 del proveedor, que también es accionable.
+    /// </summary>
+    public static void ValidarConfiguracion(ConfiguracionLlm configuracion)
+    {
+        if (configuracion is null)
+        {
+            throw new InvalidOperationException(
+                "Falta la sección 'Llm' en la configuración. Añade 'Llm: { Endpoint, Modelo, ClaveApi, SeveridadMinima }' al appsettings.json.");
+        }
+
+        if (string.IsNullOrWhiteSpace(configuracion.Endpoint))
+        {
+            throw new InvalidOperationException(
+                "Llm.Endpoint está vacío. Define la URL del proveedor en appsettings.json → Llm.Endpoint (por ejemplo, https://api.mistral.ai/v1/chat/completions).");
+        }
+
+        if (string.IsNullOrWhiteSpace(configuracion.Modelo))
+        {
+            throw new InvalidOperationException(
+                $"Llm.Modelo está vacío (Endpoint = '{configuracion.Endpoint}'). Define el nombre del modelo en appsettings.json → Llm.Modelo (por ejemplo, 'mistral-small-latest').");
+        }
+    }
+
+    /// <summary>
     /// Mensaje explícito que se usa en el reintento para forzar al LLM a devolver
     /// ÚNICAMENTE un JSON válido (sin prosa alrededor).
     /// </summary>
