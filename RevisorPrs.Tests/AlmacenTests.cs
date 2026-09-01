@@ -1,12 +1,11 @@
 using System;
 using System.IO;
 using Microsoft.Data.Sqlite;
-using NUnit.Framework;
+using Xunit;
 using RevisorPrs.Servicio;
 
 namespace RevisorPrs.Tests
 {
-    [TestFixture]
     public class AlmacenTests
     {
         private string CrearBaseTemporal()
@@ -16,17 +15,17 @@ namespace RevisorPrs.Tests
             return Path.Combine(carpeta, "testdb.db");
         }
 
-        [Test]
+        [Fact]
         public void Almacen_SobreBaseVacia_AplicaLasMigraciones()
         {
             string ruta = CrearBaseTemporal();
             using var almacen = new Almacen(ruta);
 
             // La conexión ya abre y aplica migraciones
-            Assert.That(true); // No excepción
+            Assert.True(true); // No excepción
         }
 
-        [Test]
+        [Fact]
         public void Almacen_SobreBaseYaMigrada_NoPierdeDatos()
         {
             string ruta = CrearBaseTemporal();
@@ -39,11 +38,11 @@ namespace RevisorPrs.Tests
             // Reabrir para validar que la revisión persiste y migraciones no borran
             using (var almacen = new Almacen(ruta))
             {
-                Assert.IsTrue(almacen.Revisado("repo", 1, "commit1"));
+                Assert.True(almacen.Revisado("repo", 1, "commit1"));
             }
         }
 
-        [Test]
+        [Fact]
         public void Almacen_AplicarMigracionesDosVeces_NoRompeNiDuplica()
         {
             string ruta = CrearBaseTemporal();
@@ -64,7 +63,7 @@ namespace RevisorPrs.Tests
                 {
                     cmd.CommandText = "SELECT COUNT(*) FROM EsquemaVersion";
                     var count = (long)cmd.ExecuteScalar();
-                    Assert.AreEqual(2, count, "Debe haber exactamente 2 migraciones aplicadas y registradas");
+                    Assert.Equal(2, count); // Debe haber exactamente 2 migraciones aplicadas y registradas
                 }
             }
         }
