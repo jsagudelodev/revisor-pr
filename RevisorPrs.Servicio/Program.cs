@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RevisorPrs.Servicio;
 
@@ -23,13 +24,23 @@ ConfiguracionEstado configuracionEstadoInicial = new();
 builder.Configuration.GetSection("Estado").Bind(configuracionEstadoInicial);
 ConfiguracionEstado.ValidarConfiguracion(configuracionEstadoInicial);
 
+ConfiguracionRegistro configuracionRegistroInicial = new();
+builder.Configuration.GetSection("Registro").Bind(configuracionRegistroInicial);
+ConfiguracionRegistro.ValidarConfiguracion(configuracionRegistroInicial);
+
 builder.Services.AddSingleton(configuracionInicial);
 builder.Services.AddSingleton(configuracionLlmInicial);
 builder.Services.AddSingleton(configuracionEstadoInicial);
+builder.Services.AddSingleton(configuracionRegistroInicial);
 builder.Services.AddSingleton<EstadoServicio>();
 builder.Services.AddSingleton(sp => SaneadorSecretos.DesdeConfiguracion(builder.Configuration));
 builder.Services.AddSingleton<IReloj, RelojSistema>();
 builder.Services.AddSingleton<IAlmacen, Almacen>();
+builder.Services.AddSingleton<ProveedorRegistrosRotativo>(sp => new ProveedorRegistrosRotativo(
+    sp.GetRequiredService<ConfiguracionRegistro>(),
+    sp.GetRequiredService<SaneadorSecretos>(),
+    Console.Out));
+builder.Logging.AddProvider(ServicioDeLog.ResolverProveedor(builder.Services));
 builder.Services.AddSingleton<DecisorRevisar>(sp => new DecisorRevisar(
     sp.GetRequiredService<ILogger<DecisorRevisar>>(),
     sp.GetRequiredService<IAlmacen>()));
