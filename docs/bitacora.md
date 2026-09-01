@@ -1,2 +1,3 @@
 RV.3 completado: Implementado tipo EventoPr y mapper EventoPrMapper con tests que verifican mapeo correcto y descarte seguro.
 RV.5: Se implementó ObtenerDiff y sus tests; la ejecución real contra un PR permanece pendiente por falta de app password.
+RV.14b: Se verifica la idempotencia de la vuelta de sondeo con dos tests (dos vueltas no publican dos veces; commit nuevo sobre el mismo PR sí se revisa) y se hace que AlmacenFalso respete MarcarRevisado para ejercitar la guarda.

@@ -49,7 +49,7 @@ public class EjecutorVueltaTests
 
         Assert.Single(_clienteBitbucket.LlamadasPublicarComentario);
 
-        Assert.Contains(_almacen.Revisados, r => r.idPr == "1" && r.hashCommit == "abc");
+        Assert.Contains(_almacen.Revisados, r => r.idPr == "1" && r.hashCommit == "abc" && r.slugRepo == "test/repo");
     }
     
     [Fact]
@@ -79,6 +79,54 @@ public class EjecutorVueltaTests
         
         Assert.DoesNotContain(_almacen.Revisados, r => r.idPr == "1");
         Assert.Contains(_almacen.Revisados, r => r.idPr == "2" && r.hashCommit == "def");
+    }
+
+    [Fact]
+    public async Task EjecutarAsync_DosVueltasSobreMismoEstado_NoPublicaSegundaVez()
+    {
+        // Arrange
+        var sut = CrearSut();
+        var pr = new EventoPr("test/repo", 1, "abc", "titulo", "rama");
+        _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { pr };
+
+        // Consumir la primera vuelta del decisor para que la siguiente vez filtre el PR
+        _decisor.FiltrarPrsParaRevisar(new PullRequest[0]);
+
+        // Act
+        await sut.EjecutarAsync(CancellationToken.None);
+        var publicacionesTrasPrimera = _clienteBitbucket.LlamadasPublicarComentario.Count;
+
+        await sut.EjecutarAsync(CancellationToken.None);
+        var publicacionesTrasSegunda = _clienteBitbucket.LlamadasPublicarComentario.Count;
+
+        // Assert: la cuenta de publicaciones NO sube en la segunda vuelta
+        Assert.Equal(1, publicacionesTrasPrimera);
+        Assert.Equal(publicacionesTrasPrimera, publicacionesTrasSegunda);
+    }
+
+    [Fact]
+    public async Task EjecutarAsync_CommitNuevoSobreMismoPr_SiSeRevisa()
+    {
+        // Arrange
+        var sut = CrearSut();
+        var prV1 = new EventoPr("test/repo", 1, "abc", "titulo", "rama");
+        var prV2 = new EventoPr("test/repo", 1, "def", "titulo", "rama");
+        _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { prV1 };
+
+        _decisor.FiltrarPrsParaRevisar(new PullRequest[0]);
+
+        // Act: primera vuelta con commit "abc"
+        await sut.EjecutarAsync(CancellationToken.None);
+        var publicacionesTrasPrimera = _clienteBitbucket.LlamadasPublicarComentario.Count;
+
+        // El PR ahora aparece con un commit nuevo ("def")
+        _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { prV2 };
+        await sut.EjecutarAsync(CancellationToken.None);
+        var publicacionesTrasSegunda = _clienteBitbucket.LlamadasPublicarComentario.Count;
+
+        // Assert: la cuenta SÍ sube porque el commit es nuevo
+        Assert.Equal(1, publicacionesTrasPrimera);
+        Assert.Equal(2, publicacionesTrasSegunda);
     }
 
     private class ClienteBitbucketFalso : IClienteBitbucket
@@ -129,13 +177,13 @@ public class EjecutorVueltaTests
 
     private class AlmacenFalso : IAlmacen
     {
-        public List<(string idPr, string hashCommit)> Revisados { get; } = new();
-        
+        public List<(string slugRepo, string idPr, string hashCommit)> Revisados { get; } = new();
+        private readonly HashSet<(string, int, string)> _revisados = new();
+
         public Task AplicarMigraciones(CancellationToken cancelacion) => Task.CompletedTask;
 
         public Task MarcarComoRevisado(string idPr, string hashCommit, CancellationToken cancelacion)
         {
-            Revisados.Add((idPr, hashCommit));
             return Task.CompletedTask;
         }
 
@@ -145,9 +193,13 @@ public class EjecutorVueltaTests
 
         public void MarcarRevisado(string slugRepo, int idPr, string hashCommit)
         {
-            Revisados.Add((idPr.ToString(), hashCommit));
+            _revisados.Add((slugRepo, idPr, hashCommit));
+            Revisados.Add((slugRepo, idPr.ToString(), hashCommit));
         }
 
-        public bool Revisado(string slugRepo, int idPr, string hashCommit) => false;
+        public bool Revisado(string slugRepo, int idPr, string hashCommit)
+        {
+            return _revisados.Contains((slugRepo, idPr, hashCommit));
+        }
     }
 }
