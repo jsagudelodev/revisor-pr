@@ -17,13 +17,14 @@ public class EjecutorVueltaTests
     private readonly AlmacenFalso _almacen = new();
     private readonly ConfiguracionSondeo _configuracionSondeo = new() { Repositorios = new[] { "test/repo" } };
 
-    private EjecutorVuelta CrearSut() => new(
-        _logger, 
-        _clienteBitbucket, 
-        _decisor, 
-        _revisor, 
-        _almacen, 
-        _configuracionSondeo
+    private EjecutorVuelta CrearSut(Func<DateTimeOffset>? ahora = null) => new(
+        _logger,
+        _clienteBitbucket,
+        _decisor,
+        _revisor,
+        _almacen,
+        _configuracionSondeo,
+        ahora ?? (() => _almacen.AhoraFalso)
     );
 
     [Fact]
@@ -129,6 +130,75 @@ public class EjecutorVueltaTests
         Assert.Equal(2, publicacionesTrasSegunda);
     }
 
+    [Fact]
+    public async Task EjecutarAsync_CuandoUnPrRevienta_ElSiguienteSeProcesaYElFalloQuedaRegistrado()
+    {
+        // Arrange
+        var sut = CrearSut();
+        var pr1 = new EventoPr("test/repo", 1, "abc", "titulo1", "rama1");
+        var pr2 = new EventoPr("test/repo", 2, "def", "titulo2", "rama2");
+        _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { pr1, pr2 };
+        _clienteBitbucket.FallaEnPr = 1;
+        _decisor.FiltrarPrsParaRevisar(new PullRequest[0]);
+
+        // Act
+        await sut.EjecutarAsync(CancellationToken.None);
+
+        // Assert: el primer PR se intentó, el segundo se completó y publicó
+        Assert.Equal(2, _clienteBitbucket.LlamadasObtenerDiff.Count);
+        Assert.Single(_clienteBitbucket.LlamadasPublicarComentario);
+        Assert.Equal(2, _clienteBitbucket.LlamadasPublicarComentario.First().numero);
+
+        // El motivo del fallo quedó registrado en el almacén
+        var fallos = _almacen.ListarFallos().ToList();
+        var falloPr1 = Assert.Single(fallos);
+        Assert.Equal("test/repo", falloPr1.Repositorio);
+        Assert.Equal(1, falloPr1.PullRequest);
+        Assert.Equal("abc", falloPr1.Commit);
+        Assert.Equal("Fallo simulado", falloPr1.Motivo);
+    }
+
+    [Fact]
+    public async Task EjecutarAsync_PrQueFallaRepetidamente_NoSeReintentaEnVueltasConsecutivas()
+    {
+        // Arrange
+        var sut = CrearSut();
+        var pr = new EventoPr("test/repo", 1, "abc", "titulo", "rama");
+        _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { pr };
+        _clienteBitbucket.FallaEnPr = 1;
+        _decisor.FiltrarPrsParaRevisar(new PullRequest[0]);
+
+        // Act: tres vueltas seguidas, sin avanzar el reloj
+        await sut.EjecutarAsync(CancellationToken.None);
+        await sut.EjecutarAsync(CancellationToken.None);
+        await sut.EjecutarAsync(CancellationToken.None);
+
+        // Assert: solo la primera vuelta intentó obtener el diff
+        Assert.Single(_clienteBitbucket.LlamadasObtenerDiff);
+    }
+
+    [Fact]
+    public async Task EjecutarAsync_DespuesDelBackoff_VuelveAReintentarElPrFallido()
+    {
+        // Arrange
+        var sut = CrearSut();
+        var pr = new EventoPr("test/repo", 1, "abc", "titulo", "rama");
+        _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { pr };
+        _clienteBitbucket.FallaEnPr = 1;
+        _decisor.FiltrarPrsParaRevisar(new PullRequest[0]);
+
+        // Act 1: primera vuelta falla y deja al PR en backoff
+        await sut.EjecutarAsync(CancellationToken.None);
+        Assert.Single(_clienteBitbucket.LlamadasObtenerDiff);
+
+        // Act 2: avanzamos el reloj más allá del backoff y volvemos a ejecutar
+        _almacen.AhoraFalso = _almacen.AhoraFalso.AddMinutes(5);
+        await sut.EjecutarAsync(CancellationToken.None);
+
+        // Assert: el reintento ocurrió
+        Assert.Equal(2, _clienteBitbucket.LlamadasObtenerDiff.Count);
+    }
+
     private class ClienteBitbucketFalso : IClienteBitbucket
     {
         public Dictionary<string, List<EventoPr>> Prs { get; } = new();
@@ -207,6 +277,35 @@ public class EjecutorVueltaTests
         public bool Revisado(string slugRepo, int idPr, string hashCommit)
         {
             return _revisados.Contains((slugRepo, idPr, hashCommit));
+        }
+
+        public List<(string Repositorio, int PullRequest, string Commit, string Motivo)> Fallos { get; } = new();
+
+        public DateTimeOffset AhoraFalso { get; set; } = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        public Dictionary<(string, int), DateTimeOffset> ProximosReintentos { get; } = new();
+
+        public void MarcarFallido(string slugRepo, int idPr, string hashCommit, string motivo)
+        {
+            Fallos.RemoveAll(f => f.Repositorio == slugRepo && f.PullRequest == idPr);
+            Fallos.Add((slugRepo, idPr, hashCommit, motivo));
+            // Backoff fijo de 1 minuto por vuelta falsa; los tests pueden mover
+            // el reloj con AhoraFalso para verificar cuándo se reintenta.
+            ProximosReintentos[(slugRepo, idPr)] = AhoraFalso.AddMinutes(1);
+        }
+
+        public bool DebeReintentar(string slugRepo, int idPr, DateTimeOffset ahora)
+        {
+            if (!ProximosReintentos.TryGetValue((slugRepo, idPr), out var proximo))
+            {
+                return true;
+            }
+            return ahora >= proximo;
+        }
+
+        public IEnumerable<(string Repositorio, int PullRequest, string Commit, string Motivo)> ListarFallos()
+        {
+            return Fallos.ToList();
         }
     }
 }

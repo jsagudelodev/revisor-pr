@@ -22,6 +22,7 @@ namespace RevisorPrs.Servicio
                 (1, Migracion1),
                 (2, Migracion2),
                 (3, Migracion3),
+                (4, Migracion4),
             };
 
             if (string.IsNullOrWhiteSpace(rutaBaseDatos))
@@ -111,6 +112,23 @@ namespace RevisorPrs.Servicio
             cmd.ExecuteNonQuery();
         }
 
+        private void Migracion4()
+        {
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = @"
+                CREATE TABLE IF NOT EXISTS IntentosFallidos (
+                    Repositorio TEXT NOT NULL,
+                    PullRequest INTEGER NOT NULL,
+                    ""Commit"" TEXT NOT NULL,
+                    Motivo TEXT NOT NULL,
+                    Intentos INTEGER NOT NULL,
+                    ProximoReintentoUtc TEXT NOT NULL,
+                    PRIMARY KEY(Repositorio, PullRequest)
+                );
+            ";
+            cmd.ExecuteNonQuery();
+        }
+
         public void AplicarMigraciones()
         {
             int versionActual = ObtenerVersionActual();
@@ -168,6 +186,76 @@ namespace RevisorPrs.Servicio
             cmd.Parameters.AddWithValue("@commit", commit);
             cmd.Parameters.AddWithValue("@comentario", comentario);
             cmd.ExecuteNonQuery();
+        }
+
+        public void MarcarFallido(string repositorio, int pullRequest, string commit, string motivo)
+        {
+            // Backoff exponencial en minutos, con tope de 60 minutos, para que
+            // un PR persistentemente roto no se reintente en cada vuelta.
+            int intentosPrevios;
+            using (var cmd = _connection!.CreateCommand())
+            {
+                cmd.CommandText = @"SELECT Intentos FROM IntentosFallidos WHERE Repositorio = @repositorio AND PullRequest = @pullRequest";
+                cmd.Parameters.AddWithValue("@repositorio", repositorio);
+                cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
+                var actual = cmd.ExecuteScalar();
+                intentosPrevios = actual is null || actual is DBNull ? 0 : Convert.ToInt32(actual);
+            }
+
+            int nuevosIntentos = intentosPrevios + 1;
+            int minutos = Math.Min(60, 1 << Math.Min(nuevosIntentos - 1, 30));
+            var proximoReintento = DateTimeOffset.UtcNow.AddMinutes(minutos).ToString("O");
+
+            using (var cmd = _connection!.CreateCommand())
+            {
+                cmd.CommandText = @"INSERT INTO IntentosFallidos (Repositorio, PullRequest, ""Commit"", Motivo, Intentos, ProximoReintentoUtc)
+                                    VALUES (@repositorio, @pullRequest, @commit, @motivo, @intentos, @proximo)
+                                    ON CONFLICT(Repositorio, PullRequest) DO UPDATE SET
+                                        ""Commit"" = excluded.""Commit"",
+                                        Motivo = excluded.Motivo,
+                                        Intentos = excluded.Intentos,
+                                        ProximoReintentoUtc = excluded.ProximoReintentoUtc";
+                cmd.Parameters.AddWithValue("@repositorio", repositorio);
+                cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
+                cmd.Parameters.AddWithValue("@commit", commit);
+                cmd.Parameters.AddWithValue("@motivo", motivo);
+                cmd.Parameters.AddWithValue("@intentos", nuevosIntentos);
+                cmd.Parameters.AddWithValue("@proximo", proximoReintento);
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        public bool DebeReintentar(string repositorio, int pullRequest, DateTimeOffset ahora)
+        {
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = @"SELECT ProximoReintentoUtc FROM IntentosFallidos WHERE Repositorio = @repositorio AND PullRequest = @pullRequest";
+            cmd.Parameters.AddWithValue("@repositorio", repositorio);
+            cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
+            var valor = cmd.ExecuteScalar();
+            if (valor is null || valor is DBNull)
+            {
+                return true;
+            }
+
+            if (!DateTimeOffset.TryParse((string)valor, out var proximo))
+            {
+                return true;
+            }
+
+            return ahora >= proximo;
+        }
+
+        public IEnumerable<(string Repositorio, int PullRequest, string Commit, string Motivo)> ListarFallos()
+        {
+            var resultado = new List<(string, int, string, string)>();
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = @"SELECT Repositorio, PullRequest, ""Commit"", Motivo FROM IntentosFallidos";
+            using var lector = cmd.ExecuteReader();
+            while (lector.Read())
+            {
+                resultado.Add((lector.GetString(0), lector.GetInt32(1), lector.GetString(2), lector.GetString(3)));
+            }
+            return resultado;
         }
 
         public void Dispose()

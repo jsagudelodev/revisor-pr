@@ -30,7 +30,7 @@ namespace RevisorPrs.Tests
                 {
                     cmd.CommandText = "SELECT COUNT(*) FROM EsquemaVersion";
                     var count = Convert.ToInt64(cmd.ExecuteScalar());
-                    Assert.Equal(3, count);
+                    Assert.Equal(4, count);
                 }
             }
         }
@@ -105,9 +105,9 @@ namespace RevisorPrs.Tests
 
                     using (var cmdVersiones = conexion.CreateCommand())
                     {
-                        cmdVersiones.CommandText = "SELECT COUNT(*) FROM EsquemaVersion";
-                        var versiones = Convert.ToInt64(cmdVersiones.ExecuteScalar());
-                        Assert.Equal(3, versiones);
+                    cmdVersiones.CommandText = "SELECT COUNT(*) FROM EsquemaVersion";
+                    var versiones = Convert.ToInt64(cmdVersiones.ExecuteScalar());
+                        Assert.Equal(4, versiones);
                     }
 
                     using (var cmdIndice = conexion.CreateCommand())
@@ -149,7 +149,7 @@ namespace RevisorPrs.Tests
                 {
                     cmd.CommandText = "SELECT COUNT(*) FROM EsquemaVersion";
                     var count = Convert.ToInt64(cmd.ExecuteScalar());
-                    Assert.Equal(3, count); // Debe haber exactamente 3 migraciones aplicadas y registradas
+                    Assert.Equal(4, count); // Debe haber exactamente 4 migraciones aplicadas y registradas
                 }
             }
         }

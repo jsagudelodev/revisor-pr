@@ -1,3 +1,4 @@
+using System;
 using Microsoft.Extensions.Logging;
 
 namespace RevisorPrs.Servicio;
@@ -10,6 +11,7 @@ public class EjecutorVuelta : IEjecutorVuelta
     private readonly IRevisor _revisor;
     private readonly IAlmacen _almacen;
     private readonly ConfiguracionSondeo _configuracionSondeo;
+    private readonly Func<DateTimeOffset> _ahora;
 
     public EjecutorVuelta(
         ILogger<EjecutorVuelta> logger,
@@ -17,7 +19,8 @@ public class EjecutorVuelta : IEjecutorVuelta
         DecisorRevisar decisor,
         IRevisor revisor,
         IAlmacen almacen,
-        ConfiguracionSondeo configuracionSondeo)
+        ConfiguracionSondeo configuracionSondeo,
+        Func<DateTimeOffset>? ahora = null)
     {
         _logger = logger;
         _clienteBitbucket = clienteBitbucket;
@@ -25,6 +28,7 @@ public class EjecutorVuelta : IEjecutorVuelta
         _revisor = revisor;
         _almacen = almacen;
         _configuracionSondeo = configuracionSondeo;
+        _ahora = ahora ?? (() => DateTimeOffset.UtcNow);
     }
 
     public async Task EjecutarAsync(CancellationToken cancelacion)
@@ -48,6 +52,21 @@ public class EjecutorVuelta : IEjecutorVuelta
         
         var prsParaRevisar = _decisor.FiltrarPrsParaRevisar(todosLosPrs);
 
+        // Anyadimos los PRs que el almacen tiene en backoff por un fallo
+        // reciente: aunque el decisor ya los conozca con el mismo commit, el
+        // ejecutor debe decidir si el plazo de reintento ha vencido.
+        var prsParaRevisarLista = prsParaRevisar.ToList();
+        foreach (var f in _almacen.ListarFallos())
+        {
+            if (f.Commit is null) continue;
+            if (prsParaRevisarLista.Any(p => p.Repositorio == f.Repositorio && p.Numero == f.PullRequest))
+            {
+                continue;
+            }
+            prsParaRevisarLista.Add(new PullRequest(f.Repositorio, f.PullRequest, f.Commit));
+        }
+        prsParaRevisar = prsParaRevisarLista;
+
         foreach (var pr in prsParaRevisar)
         {
             try
@@ -55,6 +74,14 @@ public class EjecutorVuelta : IEjecutorVuelta
                 if (_almacen.Revisado(pr.Repositorio, pr.Numero, pr.Commit))
                 {
                     _logger.LogInformation("PR {Repositorio}#{Numero} commit {Commit} ya revisado. Saltando.", pr.Repositorio, pr.Numero, pr.Commit);
+                    continue;
+                }
+
+                if (!_almacen.DebeReintentar(pr.Repositorio, pr.Numero, _ahora()))
+                {
+                    _logger.LogInformation(
+                        "PR {Repositorio}#{Numero} en backoff por fallos previos. Se omite hasta el próximo reintento.",
+                        pr.Repositorio, pr.Numero);
                     continue;
                 }
 
@@ -71,13 +98,32 @@ public class EjecutorVuelta : IEjecutorVuelta
                 else
                 {
                     _logger.LogWarning("La revisión del PR {Repositorio}#{Numero} no tuvo éxito: {Motivo}", pr.Repositorio, pr.Numero, resultadoRevision.Motivo);
+                    _almacen.MarcarFallido(pr.Repositorio, pr.Numero, pr.Commit, resultadoRevision.Motivo ?? "revisión sin éxito");
+                    continue;
                 }
-                
+
                 _almacen.MarcarRevisado(pr.Repositorio, pr.Numero, pr.Commit);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error procesando PR {Repositorio}#{Numero}. Se continuará con el siguiente.", pr.Repositorio, pr.Numero);
+
+                // Si la operacion fue cancelada (caida del servicio, RV.17), no
+                // dejamos al PR en backoff: queremos que la siguiente vuelta
+                // lo reintente sin penalizacion. Tambien respetamos un token
+                // cancelado a mitad de una revision exitosa.
+                if (ex is OperationCanceledException)
+                {
+                    if (cancelacion.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    // OperationCanceledException sin cancelacion solicitada:
+                    // cliente simulado (tests), seguimos con el siguiente.
+                    continue;
+                }
+
+                _almacen.MarcarFallido(pr.Repositorio, pr.Numero, pr.Commit, ex.Message);
             }
         }
 
