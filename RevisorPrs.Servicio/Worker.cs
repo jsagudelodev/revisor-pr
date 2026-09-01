@@ -6,6 +6,7 @@ public class Worker : BackgroundService
     private readonly ConfiguracionSondeo _configuracion;
     private readonly IEjecutorVuelta _ejecutor;
     private readonly IReloj _reloj;
+    private readonly SemaphoreSlim _candadoVuelta = new SemaphoreSlim(1);
 
     public Worker(
         ILogger<Worker> logger,
@@ -44,8 +45,24 @@ public class Worker : BackgroundService
     /// Ejecuta exactamente una vuelta de sondeo. Pensado para tests que
     /// sustituyen <see cref="IReloj"/> y <see cref="IEjecutorVuelta"/> por dobles.
     /// </summary>
-    public Task EjecutarUnaVueltaAsync(CancellationToken cancelacion)
-        => _ejecutor.EjecutarAsync(cancelacion);
+    /// <remarks>
+    /// La vuelta se ejecuta en serie con cualquier otra llamada concurrente a este
+    /// método: si el sondeo se despierta y la vuelta anterior sigue corriendo, la
+    /// nueva espera a que termine antes de empezar. Asi nunca hay dos vueltas en
+    /// paralelo pisandose.
+    /// </remarks>
+    public async Task EjecutarUnaVueltaAsync(CancellationToken cancelacion)
+    {
+        await _candadoVuelta.WaitAsync(cancelacion);
+        try
+        {
+            await _ejecutor.EjecutarAsync(cancelacion);
+        }
+        finally
+        {
+            _candadoVuelta.Release();
+        }
+    }
 
     public static void ValidarConfiguracion(ConfiguracionSondeo configuracion)
     {

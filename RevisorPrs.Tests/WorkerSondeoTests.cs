@@ -111,4 +111,121 @@ public class WorkerSondeoTests
         // No debe lanzar.
         Worker.ValidarConfiguracion(ConfiguracionValida());
     }
+
+    [Fact]
+    public async Task DosVueltasConcurrentes_NoSePisan_YAmbasAcaban()
+    {
+        ConfiguracionSondeo cfg = ConfiguracionValida();
+        RelojFalso reloj = new();
+
+        // Falso del ejecutor que cuenta entradas concurrentes y se deja retener
+        // por la primera vuelta para forzar la serializacion.
+        ContadorEjecutorVuelta ejecutor = new();
+
+        using CancellationTokenSource cts = new();
+        Worker worker = CrearWorker(cfg, ejecutor, reloj);
+
+        // Dispara DOS vueltas a la vez. La primera se queda retenida por el
+        // TaskCompletionSource; la segunda debe esperar a que termine antes de
+        // empezar (el candado del Worker serializa).
+        Task primera = worker.EjecutarUnaVueltaAsync(cts.Token);
+        Task segunda = worker.EjecutarUnaVueltaAsync(cts.Token);
+
+        // Espera a que la PRIMERA vuelta haya entrado. Mientras siga dentro, el
+        // candado del Worker impide que la segunda pueda entrar, asi que
+        // esperamos a soltarla ANTES de pedir la entrada de la segunda.
+        await ejecutor.PrimeraEsperada.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, ejecutor.Entradas);
+        Assert.Equal(1, ejecutor.MaximoEntradasSimultaneas);
+
+        // Suelta la primera vuelta para liberar el candado.
+        ejecutor.Soltar(1);
+        await primera.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // Ahora la segunda puede entrar y registrarse.
+        await ejecutor.SegundaEsperada.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, ejecutor.MaximoEntradasSimultaneas);
+        Assert.Equal(2, ejecutor.Entradas);
+
+        // Suelta la segunda y comprueba que ambas terminaron serializadas.
+        ejecutor.Soltar(2);
+        await segunda.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(2, ejecutor.Entradas);
+        Assert.Equal(0, ejecutor.VueltasEnVuelo);
+        Assert.Equal(2, ejecutor.Salidas);
+    }
+
+    private sealed class ContadorEjecutorVuelta : IEjecutorVuelta
+    {
+        private readonly TaskCompletionSource _primeraEsperada = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _segundaEsperada = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Dictionary<int, TaskCompletionSource> _gatesPorNumeroDeLlamada = new();
+        private int _numeroDeLlamada;
+        private int _entradasEnVuelo;
+        private int _salidas;
+        private int _maximoEntradasSimultaneas;
+
+        public Task PrimeraEsperada => _primeraEsperada.Task;
+        public Task SegundaEsperada => _segundaEsperada.Task;
+
+        // Numero total de vueltas que el Worker ha lanzado contra el ejecutor.
+        public int Entradas => Volatile.Read(ref _numeroDeLlamada);
+
+        // Vueltas que estan ejecutandose AHORA MISMO dentro del ejecutor.
+        public int VueltasEnVuelo => _entradasEnVuelo;
+
+        public int Salidas => _salidas;
+        public int MaximoEntradasSimultaneas => _maximoEntradasSimultaneas;
+
+        public void Soltar(int numeroDeLlamada)
+        {
+            lock (_gatesPorNumeroDeLlamada)
+            {
+                if (_gatesPorNumeroDeLlamada.TryGetValue(numeroDeLlamada, out TaskCompletionSource? gate))
+                {
+                    gate.TrySetResult();
+                }
+            }
+        }
+
+        public async Task EjecutarAsync(CancellationToken cancelacion)
+        {
+            int ahora = Interlocked.Increment(ref _numeroDeLlamada);
+            Interlocked.Increment(ref _entradasEnVuelo);
+
+            // Registra el maximo de entradas simultaneas (CAS sin bucle: el maximo solo crece).
+            int enVuelo = Volatile.Read(ref _entradasEnVuelo);
+            int maxActual;
+            do
+            {
+                maxActual = Volatile.Read(ref _maximoEntradasSimultaneas);
+                if (enVuelo <= maxActual)
+                {
+                    break;
+                }
+            }
+            while (Interlocked.CompareExchange(ref _maximoEntradasSimultaneas, enVuelo, maxActual) != maxActual);
+
+            TaskCompletionSource gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_gatesPorNumeroDeLlamada)
+            {
+                _gatesPorNumeroDeLlamada[ahora] = gate;
+            }
+
+            if (ahora == 1)
+            {
+                _primeraEsperada.TrySetResult();
+            }
+            else if (ahora == 2)
+            {
+                _segundaEsperada.TrySetResult();
+            }
+
+            await gate.Task.WaitAsync(cancelacion);
+
+            Interlocked.Increment(ref _salidas);
+            Interlocked.Decrement(ref _entradasEnVuelo);
+        }
+    }
 }
