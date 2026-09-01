@@ -21,7 +21,9 @@ builder.Services.AddSingleton(configuracionInicial);
 builder.Services.AddSingleton(configuracionLlmInicial);
 builder.Services.AddSingleton<IReloj, RelojSistema>();
 builder.Services.AddSingleton<IAlmacen, Almacen>();
-builder.Services.AddSingleton<DecisorRevisar>();
+builder.Services.AddSingleton<DecisorRevisar>(sp => new DecisorRevisar(
+    sp.GetRequiredService<ILogger<DecisorRevisar>>(),
+    sp.GetRequiredService<IAlmacen>()));
 builder.Services.AddSingleton<IEjecutorVuelta, EjecutorVuelta>();
 builder.Services.AddSingleton<TraductorEventoPr>();
 builder.Services.AddHttpClient<IClienteBitbucket, ClienteBitbucket>();

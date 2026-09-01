@@ -191,6 +191,13 @@ public class EjecutorVueltaTests
         public Task RegistrarComentario(string idPr, string hashCommit, string idComentario, CancellationToken cancelacion) => Task.CompletedTask;
         public Task<string?> ObtenerIdComentario(string idPr, string hashCommit, CancellationToken cancelacion) => Task.FromResult<string?>(null);
 
+        public IEnumerable<(string Repositorio, int Numero, string Commit)> ListarRevisiones()
+        {
+            return _revisados
+                .Select(t => (t.Item1, t.Item2, t.Item3))
+                .ToList();
+        }
+
         public void MarcarRevisado(string slugRepo, int idPr, string hashCommit)
         {
             _revisados.Add((slugRepo, idPr, hashCommit));

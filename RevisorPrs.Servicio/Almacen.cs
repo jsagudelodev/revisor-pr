@@ -146,6 +146,19 @@ namespace RevisorPrs.Servicio
             cmd.ExecuteNonQuery();
         }
 
+        public IEnumerable<(string Repositorio, int Numero, string Commit)> ListarRevisiones()
+        {
+            var resultado = new List<(string, int, string)>();
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = @"SELECT Repositorio, PullRequest, ""Commit"" FROM Revisiones";
+            using var lector = cmd.ExecuteReader();
+            while (lector.Read())
+            {
+                resultado.Add((lector.GetString(0), lector.GetInt32(1), lector.GetString(2)));
+            }
+            return resultado;
+        }
+
         public void GuardarHallazgoPublicado(string repositorio, int pullRequest, string commit, string comentario)
         {
             using var cmd = _connection!.CreateCommand();
