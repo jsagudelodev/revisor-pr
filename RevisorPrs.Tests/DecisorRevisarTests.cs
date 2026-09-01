@@ -11,7 +11,7 @@ public class DecisorRevisarTests
     private readonly ILogger<DecisorRevisar> _logger = new LoggerFactory().CreateLogger<DecisorRevisar>();
 
     [Fact]
-    public void PrimeraVueltaNoDevuelvePrsParaRevisar()
+    public void DevuelveTodosLosPrsAbiertosAlEvaluarlos()
     {
         var decisor = new DecisorRevisar(_logger);
 
@@ -23,76 +23,24 @@ public class DecisorRevisarTests
 
         var prsParaRevisar = decisor.FiltrarPrsParaRevisar(prsAbiertos).ToList();
 
-        Assert.Empty(prsParaRevisar);
+        Assert.Equal(2, prsParaRevisar.Count);
     }
 
     [Fact]
-    public void PrNuevoSeRevisa()
+    public void DedupicaPorRepositorioYNumeroQuedandoseConElUltimoCommit()
     {
         var decisor = new DecisorRevisar(_logger);
 
-        var prsPrimerVuelta = new List<PullRequest>
+        var prsAbiertos = new List<PullRequest>
         {
-            new PullRequest("repo/uno", 1, "abc123"),
-        };
-        _ = decisor.FiltrarPrsParaRevisar(prsPrimerVuelta).ToList();
-
-        var prsNuevos = new List<PullRequest>
-        {
-            new PullRequest("repo/uno", 1, "abc123"),
-            new PullRequest("repo/uno", 2, "def456"),
+            new PullRequest("repo/uno", 1, "antiguo"),
+            new PullRequest("repo/uno", 1, "nuevo"),
+            new PullRequest("repo/uno", 1, "intermedio"),
         };
 
-        var prsParaRevisar = decisor.FiltrarPrsParaRevisar(prsNuevos).ToList();
+        var prsParaRevisar = decisor.FiltrarPrsParaRevisar(prsAbiertos).ToList();
 
-        Assert.Single(prsParaRevisar);
-        Assert.Equal(2, prsParaRevisar[0].Numero);
-    }
-
-    [Fact]
-    public void PrYaRevisadoSinCambiosNoSeRevisa()
-    {
-        var decisor = new DecisorRevisar(_logger);
-
-        var prsIniciales = new List<PullRequest>
-        {
-            new PullRequest("repo/uno", 1, "abc123"),
-            new PullRequest("repo/uno", 2, "def456"),
-        };
-        _ = decisor.FiltrarPrsParaRevisar(prsIniciales).ToList();
-
-        var prsSinCambios = new List<PullRequest>
-        {
-            new PullRequest("repo/uno", 1, "abc123"),
-            new PullRequest("repo/uno", 2, "def456"),
-        };
-
-        var prsParaRevisar = decisor.FiltrarPrsParaRevisar(prsSinCambios).ToList();
-
-        Assert.Empty(prsParaRevisar);
-    }
-
-    [Fact]
-    public void PrConCommitNuevoSobreRevisionPreviaSeRevisa()
-    {
-        var decisor = new DecisorRevisar(_logger);
-
-        var prsIniciales = new List<PullRequest>
-        {
-            new PullRequest("repo/uno", 1, "abc123"),
-        };
-        _ = decisor.FiltrarPrsParaRevisar(prsIniciales).ToList();
-
-        var prsActualizados = new List<PullRequest>
-        {
-            new PullRequest("repo/uno", 2, "def456"),
-            new PullRequest("repo/uno", 1, "nuevoCommit"),
-        };
-
-        var prsParaRevisar = decisor.FiltrarPrsParaRevisar(prsActualizados).ToList();
-
-        Assert.Single(prsParaRevisar);
-        Assert.Equal(1, prsParaRevisar[0].Numero);
-        Assert.Equal("nuevoCommit", prsParaRevisar[0].Commit);
+        var unico = Assert.Single(prsParaRevisar);
+        Assert.Equal("nuevo", unico.Commit);
     }
 }
