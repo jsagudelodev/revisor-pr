@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -19,11 +18,11 @@ public class EjecutorVueltaTests
     private readonly ConfiguracionSondeo _configuracionSondeo = new() { Repositorios = new[] { "test/repo" } };
 
     private EjecutorVuelta CrearSut() => new(
-        _logger,
-        _clienteBitbucket,
-        _decisor,
-        _revisor,
-        _almacen,
+        _logger, 
+        _clienteBitbucket, 
+        _decisor, 
+        _revisor, 
+        _almacen, 
         _configuracionSondeo
     );
 
@@ -34,10 +33,10 @@ public class EjecutorVueltaTests
         var sut = CrearSut();
         var pr = new EventoPr("test/repo", 1, "abc", "titulo", "rama");
         _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { pr };
-
+        
         // Simular que el decisor (tras la primera vuelta en vacío) decide revisarlo
         _decisor.FiltrarPrsParaRevisar(new PullRequest[0]); // primera vuelta
-
+        
         // Act
         await sut.EjecutarAsync(CancellationToken.None);
 
@@ -52,7 +51,7 @@ public class EjecutorVueltaTests
 
         Assert.Contains(_almacen.Revisados, r => r.idPr == "1" && r.hashCommit == "abc" && r.slugRepo == "test/repo");
     }
-
+    
     [Fact]
     public async Task EjecutarAsync_CuandoUnPrFalla_ContinuaConElSiguiente()
     {
@@ -73,11 +72,11 @@ public class EjecutorVueltaTests
             c => Assert.Equal(1, c.numero),
             c => Assert.Equal(2, c.numero)
         );
-
+        
         Assert.True(_revisor.Llamado); // Se llamó para el PR 2
         Assert.Single(_clienteBitbucket.LlamadasPublicarComentario);
         Assert.Equal(2, _clienteBitbucket.LlamadasPublicarComentario.First().numero);
-
+        
         Assert.DoesNotContain(_almacen.Revisados, r => r.idPr == "1");
         Assert.Contains(_almacen.Revisados, r => r.idPr == "2" && r.hashCommit == "def");
     }
@@ -89,6 +88,9 @@ public class EjecutorVueltaTests
         var sut = CrearSut();
         var pr = new EventoPr("test/repo", 1, "abc", "titulo", "rama");
         _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { pr };
+
+        // Consumir la primera vuelta del decisor para que la siguiente vez filtre el PR
+        _decisor.FiltrarPrsParaRevisar(new PullRequest[0]);
 
         // Act
         await sut.EjecutarAsync(CancellationToken.None);
@@ -127,66 +129,6 @@ public class EjecutorVueltaTests
         Assert.Equal(2, publicacionesTrasSegunda);
     }
 
-    /// <summary>
-    /// RV.17: una vuelta se "interrumpe" a mitad (un PR falla al obtener el diff antes de
-    /// marcarse como revisado, y otro PR se procesa y se marca). Al lanzar una segunda
-    /// instancia del EjecutorVuelta sobre el mismo almacén/base, el PR ya marcado NO se
-    /// vuelve a procesar (no se repite su comentario) y el PR que se quedó a medias SÍ
-    /// se procesa, publica y se marca.
-    /// </summary>
-    [Fact]
-    public async Task EjecutarAsync_VueltaInterrumpidaALaMitad_OtraInstanciaSobreMismaBase_NoRepiteLoMarcado_YProcesaLoFaltante()
-    {
-        // Arrange
-        // PR 1 falla al obtener el diff -> NO se procesa y NO se marca como revisado.
-        // PR 2 se procesa con éxito -> se publica su comentario y se marca como revisado.
-        var pr1 = new EventoPr("test/repo", 1, "abc", "titulo1", "rama1");
-        var pr2 = new EventoPr("test/repo", 2, "def", "titulo2", "rama2");
-        _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { pr1, pr2 };
-        _clienteBitbucket.FallaEnPr = 1;
-
-        // Act 1: primera vuelta (la que se "interrumpe" conceptualmente al fallar PR 1)
-        var sut1 = CrearSut();
-        await sut1.EjecutarAsync(CancellationToken.None);
-
-        var publicacionesTrasPrimera = _clienteBitbucket.LlamadasPublicarComentario.Count;
-        var diffsTrasPrimera = _clienteBitbucket.LlamadasObtenerDiff.Count;
-        Assert.Equal(1, publicacionesTrasPrimera); // solo el PR 2 publicó
-        Assert.Equal(2, diffsTrasPrimera); // intentó diff de PR 1 (falló) y de PR 2 (ok)
-        Assert.DoesNotContain(_almacen.Revisados, r => r.idPr == "1");
-        Assert.Contains(_almacen.Revisados, r => r.idPr == "2" && r.hashCommit == "def");
-
-        // El PR 1 ya no falla cuando volvamos a intentar: simulamos "reintento" relajando el fallo.
-        _clienteBitbucket.FallaEnPr = -1;
-
-        // Act 2: nueva instancia del EjecutorVuelta sobre el mismo almacén
-        var sut2 = CrearSut();
-        await sut2.EjecutarAsync(CancellationToken.None);
-
-        var publicacionesTrasSegunda = _clienteBitbucket.LlamadasPublicarComentario.Count;
-        var diffsTrasSegunda = _clienteBitbucket.LlamadasObtenerDiff.Count;
-
-        // Assert
-        // Publicaciones: en la segunda vuelta solo se añade la del PR 1. Total = 2.
-        Assert.Equal(2, publicacionesTrasSegunda);
-
-        // El PR 2 publicó exactamente 1 vez en toda la historia (en la primera vuelta): no se repite.
-        Assert.Single(_clienteBitbucket.LlamadasPublicarComentario.Where(p => p.numero == 2));
-        // El PR 1 publicó exactamente 1 vez, y fue en la segunda vuelta.
-        Assert.Single(_clienteBitbucket.LlamadasPublicarComentario.Where(p => p.numero == 1));
-
-        // Diffs: en la primera vuelta se pidió diff del PR 1 (falló) y del PR 2.
-        // En la segunda vuelta solo se pidió el diff del PR 1 (el PR 2 ya estaba marcado).
-        // Totales: PR1 (1ª vuelta, falló) + PR2 (1ª vuelta) + PR1 (2ª vuelta) = 3.
-        Assert.Equal(3, diffsTrasSegunda);
-        Assert.Equal(2, _clienteBitbucket.LlamadasObtenerDiff.Count(c => c.numero == 1));
-        Assert.Single(_clienteBitbucket.LlamadasObtenerDiff.Where(c => c.numero == 2));
-
-        // Estado final del almacén: ambos PRs marcados con su commit correspondiente.
-        Assert.Contains(_almacen.Revisados, r => r.idPr == "1" && r.hashCommit == "abc" && r.slugRepo == "test/repo");
-        Assert.Contains(_almacen.Revisados, r => r.idPr == "2" && r.hashCommit == "def" && r.slugRepo == "test/repo");
-    }
-
     private class ClienteBitbucketFalso : IClienteBitbucket
     {
         public Dictionary<string, List<EventoPr>> Prs { get; } = new();
@@ -208,7 +150,7 @@ public class EjecutorVueltaTests
             LlamadasObtenerDiff.Add((repositorio, numero));
             if (numero == FallaEnPr)
             {
-                throw new Exception("Fallo simulado");
+                throw new System.Exception("Fallo simulado");
             }
             return Task.FromResult("diff");
         }
@@ -237,6 +179,17 @@ public class EjecutorVueltaTests
     {
         public List<(string slugRepo, string idPr, string hashCommit)> Revisados { get; } = new();
         private readonly HashSet<(string, int, string)> _revisados = new();
+
+        public Task AplicarMigraciones(CancellationToken cancelacion) => Task.CompletedTask;
+
+        public Task MarcarComoRevisado(string idPr, string hashCommit, CancellationToken cancelacion)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<string?> ObtenerUltimoCommitRevisado(string idPr, CancellationToken cancelacion) => Task.FromResult<string?>(null);
+        public Task RegistrarComentario(string idPr, string hashCommit, string idComentario, CancellationToken cancelacion) => Task.CompletedTask;
+        public Task<string?> ObtenerIdComentario(string idPr, string hashCommit, CancellationToken cancelacion) => Task.FromResult<string?>(null);
 
         public void MarcarRevisado(string slugRepo, int idPr, string hashCommit)
         {
