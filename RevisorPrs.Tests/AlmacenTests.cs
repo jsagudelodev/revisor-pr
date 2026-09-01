@@ -21,8 +21,18 @@ namespace RevisorPrs.Tests
             string ruta = CrearBaseTemporal();
             using var almacen = new Almacen(ruta);
 
-            // La conexión ya abre y aplica migraciones
-            Assert.True(true); // No excepción
+            // La conexión ya abre y aplica migraciones. Se verifica que la tabla de migraciones
+            // existe y tiene los registros esperados.
+            using (var conexion = new SqliteConnection($"Data Source={ruta}"))
+            {
+                conexion.Open();
+                using (var cmd = conexion.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT COUNT(*) FROM EsquemaVersion";
+                    var count = Convert.ToInt64(cmd.ExecuteScalar());
+                    Assert.Equal(2, count); 
+                }
+            }
         }
 
         [Fact]
@@ -62,7 +72,7 @@ namespace RevisorPrs.Tests
                 using (var cmd = conexion.CreateCommand())
                 {
                     cmd.CommandText = "SELECT COUNT(*) FROM EsquemaVersion";
-                    var count = (long)cmd.ExecuteScalar();
+                    var count = Convert.ToInt64(cmd.ExecuteScalar());
                     Assert.Equal(2, count); // Debe haber exactamente 2 migraciones aplicadas y registradas
                 }
             }
