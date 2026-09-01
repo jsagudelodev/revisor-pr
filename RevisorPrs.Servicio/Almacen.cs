@@ -10,7 +10,7 @@ namespace RevisorPrs.Servicio
     public class Almacen : IDisposable
     {
         private readonly string _connectionString;
-        private SqliteConnection _connection;
+        private SqliteConnection? _connection;
 
         // Definicion de migraciones numeradas
         private readonly List<(int version, Action migracion)> migraciones;
@@ -44,7 +44,7 @@ namespace RevisorPrs.Servicio
 
         private void CrearTablaVersion()
         {
-            using var cmd = _connection.CreateCommand();
+            using var cmd = _connection!.CreateCommand();
             cmd.CommandText = @"
                 CREATE TABLE IF NOT EXISTS EsquemaVersion (
                     Version INTEGER PRIMARY KEY
@@ -55,9 +55,9 @@ namespace RevisorPrs.Servicio
 
         private int ObtenerVersionActual()
         {
-            using var cmd = _connection.CreateCommand();
+            using var cmd = _connection!.CreateCommand();
             cmd.CommandText = "SELECT MAX(Version) FROM EsquemaVersion";
-            object result = cmd.ExecuteScalar();
+            object? result = cmd.ExecuteScalar();
             if (result == DBNull.Value || result == null)
                 return 0;
             return Convert.ToInt32(result);
@@ -65,7 +65,7 @@ namespace RevisorPrs.Servicio
 
         private void InsertarVersion(int version)
         {
-            using var cmd = _connection.CreateCommand();
+            using var cmd = _connection!.CreateCommand();
             cmd.CommandText = "INSERT INTO EsquemaVersion (Version) VALUES (@version)";
             cmd.Parameters.AddWithValue("@version", version);
             cmd.ExecuteNonQuery();
@@ -73,13 +73,13 @@ namespace RevisorPrs.Servicio
 
         private void Migracion1()
         {
-            using var cmd = _connection.CreateCommand();
+            using var cmd = _connection!.CreateCommand();
             cmd.CommandText = @"
                 CREATE TABLE IF NOT EXISTS Revisiones (
                     Repositorio TEXT NOT NULL,
                     PullRequest INTEGER NOT NULL,
-                    "Commit" TEXT NOT NULL,
-                    PRIMARY KEY(Repositorio, PullRequest, "Commit")
+                    ""Commit"" TEXT NOT NULL,
+                    PRIMARY KEY(Repositorio, PullRequest, ""Commit"")
                 );
             ";
             cmd.ExecuteNonQuery();
@@ -87,13 +87,13 @@ namespace RevisorPrs.Servicio
 
         private void Migracion2()
         {
-            using var cmd = _connection.CreateCommand();
+            using var cmd = _connection!.CreateCommand();
             cmd.CommandText = @"
                 CREATE TABLE IF NOT EXISTS HallazgosPublicados (
                     Id INTEGER PRIMARY KEY AUTOINCREMENT,
                     Repositorio TEXT NOT NULL,
                     PullRequest INTEGER NOT NULL,
-                    "Commit" TEXT NOT NULL,
+                    ""Commit"" TEXT NOT NULL,
                     Comentario TEXT NOT NULL
                 );
             ";
@@ -115,8 +115,8 @@ namespace RevisorPrs.Servicio
 
         public bool Revisado(string repositorio, int pullRequest, string commit)
         {
-            using var cmd = _connection.CreateCommand();
-            cmd.CommandText = @"SELECT 1 FROM Revisiones WHERE Repositorio = @repositorio AND PullRequest = @pullRequest AND Commit = @commit LIMIT 1";
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = @"SELECT 1 FROM Revisiones WHERE Repositorio = @repositorio AND PullRequest = @pullRequest AND ""Commit"" = @commit LIMIT 1";
             cmd.Parameters.AddWithValue("@repositorio", repositorio);
             cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
             cmd.Parameters.AddWithValue("@commit", commit);
@@ -127,7 +127,7 @@ namespace RevisorPrs.Servicio
 
         public void MarcarRevisado(string repositorio, int pullRequest, string commit)
         {
-            using var cmd = _connection.CreateCommand();
+            using var cmd = _connection!.CreateCommand();
             cmd.CommandText = @"INSERT OR IGNORE INTO Revisiones (Repositorio, PullRequest, ""Commit"") VALUES (@repositorio, @pullRequest, @commit)";
             cmd.Parameters.AddWithValue("@repositorio", repositorio);
             cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
@@ -137,7 +137,7 @@ namespace RevisorPrs.Servicio
 
         public void GuardarHallazgoPublicado(string repositorio, int pullRequest, string commit, string comentario)
         {
-            using var cmd = _connection.CreateCommand();
+            using var cmd = _connection!.CreateCommand();
             cmd.CommandText = @"INSERT INTO HallazgosPublicados (Repositorio, PullRequest, ""Commit"", Comentario) VALUES (@repositorio, @pullRequest, @commit, @comentario)";
             cmd.Parameters.AddWithValue("@repositorio", repositorio);
             cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
