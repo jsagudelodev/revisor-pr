@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace RevisorPrs.Servicio
 {
-    public class Almacen : IDisposable
+    public class Almacen : IAlmacen, IDisposable
     {
         private readonly string _connectionString;
         private SqliteConnection? _connection;
