@@ -30,7 +30,7 @@ namespace RevisorPrs.Tests
                 {
                     cmd.CommandText = "SELECT COUNT(*) FROM EsquemaVersion";
                     var count = Convert.ToInt64(cmd.ExecuteScalar());
-                    Assert.Equal(2, count); 
+                    Assert.Equal(3, count);
                 }
             }
         }
@@ -49,6 +49,82 @@ namespace RevisorPrs.Tests
             using (var almacen = new Almacen(ruta))
             {
                 Assert.True(almacen.Revisado("repo", 1, "commit1"));
+            }
+        }
+
+        [Fact]
+        public void Almacen_DosRepositorios_NoCompartenRevisiones()
+        {
+            string ruta = CrearBaseTemporal();
+            using (var almacen = new Almacen(ruta))
+            {
+                almacen.MarcarRevisado("equipo-a/repo-1", 42, "abc123");
+                almacen.GuardarHallazgoPublicado("equipo-a/repo-1", 42, "abc123", "comentario repo-1");
+            }
+
+            // Reabrir y comprobar que un PR con el mismo numero y commit en OTRO repositorio
+            // no aparece como revisado ni tiene hallazgos publicados.
+            using (var almacen = new Almacen(ruta))
+            {
+                Assert.False(almacen.Revisado("equipo-a/repo-2", 42, "abc123"),
+                    "El PR del repo-2 no debe aparecer como revisado por datos del repo-1.");
+
+                using (var conexion = new SqliteConnection($"Data Source={ruta}"))
+                {
+                    conexion.Open();
+                    using var cmd = conexion.CreateCommand();
+                    cmd.CommandText = @"SELECT COUNT(*) FROM HallazgosPublicados WHERE Repositorio = @repo";
+                    cmd.Parameters.AddWithValue("@repo", "equipo-a/repo-2");
+                    var cuenta = Convert.ToInt64(cmd.ExecuteScalar());
+                    Assert.Equal(0, cuenta);
+                }
+            }
+        }
+
+        [Fact]
+        public void Almacen_MigracionSobreBaseConDatosPrevios_NoLosPierde()
+        {
+            string ruta = CrearBaseTemporal();
+
+            // Fase 1: base solo con migraciones 1 y 2, con datos previos.
+            using (var almacen = new Almacen(ruta))
+            {
+                almacen.MarcarRevisado("equipo-a/repo-1", 1, "commit-inicial");
+                almacen.GuardarHallazgoPublicado("equipo-a/repo-1", 1, "commit-inicial", "hallazgo previo");
+            }
+
+            // Fase 2: reabrir dispara la nueva migracion 3 sobre la base con datos.
+            using (var almacen = new Almacen(ruta))
+            {
+                Assert.True(almacen.Revisado("equipo-a/repo-1", 1, "commit-inicial"),
+                    "El registro previo de Revisiones debe sobrevivir a la migracion 3.");
+
+                using (var conexion = new SqliteConnection($"Data Source={ruta}"))
+                {
+                    conexion.Open();
+
+                    using (var cmdVersiones = conexion.CreateCommand())
+                    {
+                        cmdVersiones.CommandText = "SELECT COUNT(*) FROM EsquemaVersion";
+                        var versiones = Convert.ToInt64(cmdVersiones.ExecuteScalar());
+                        Assert.Equal(3, versiones);
+                    }
+
+                    using (var cmdIndice = conexion.CreateCommand())
+                    {
+                        cmdIndice.CommandText =
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'IX_HallazgosPublicados_Aislamiento'";
+                        var indice = Convert.ToInt64(cmdIndice.ExecuteScalar());
+                        Assert.Equal(1, indice);
+                    }
+
+                    using (var cmdHallazgos = conexion.CreateCommand())
+                    {
+                        cmdHallazgos.CommandText = "SELECT COUNT(*) FROM HallazgosPublicados";
+                        var hallazgos = Convert.ToInt64(cmdHallazgos.ExecuteScalar());
+                        Assert.Equal(1, hallazgos);
+                    }
+                }
             }
         }
 
@@ -73,7 +149,7 @@ namespace RevisorPrs.Tests
                 {
                     cmd.CommandText = "SELECT COUNT(*) FROM EsquemaVersion";
                     var count = Convert.ToInt64(cmd.ExecuteScalar());
-                    Assert.Equal(2, count); // Debe haber exactamente 2 migraciones aplicadas y registradas
+                    Assert.Equal(3, count); // Debe haber exactamente 3 migraciones aplicadas y registradas
                 }
             }
         }

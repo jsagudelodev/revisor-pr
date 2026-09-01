@@ -21,6 +21,7 @@ namespace RevisorPrs.Servicio
             {
                 (1, Migracion1),
                 (2, Migracion2),
+                (3, Migracion3),
             };
 
             if (string.IsNullOrWhiteSpace(rutaBaseDatos))
@@ -96,6 +97,16 @@ namespace RevisorPrs.Servicio
                     ""Commit"" TEXT NOT NULL,
                     Comentario TEXT NOT NULL
                 );
+            ";
+            cmd.ExecuteNonQuery();
+        }
+
+        private void Migracion3()
+        {
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = @"
+                CREATE INDEX IF NOT EXISTS IX_HallazgosPublicados_Aislamiento
+                ON HallazgosPublicados (Repositorio, PullRequest, ""Commit"");
             ";
             cmd.ExecuteNonQuery();
         }
