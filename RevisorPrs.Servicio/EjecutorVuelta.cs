@@ -12,6 +12,8 @@ public class EjecutorVuelta : IEjecutorVuelta
     private readonly IAlmacen _almacen;
     private readonly ConfiguracionSondeo _configuracionSondeo;
     private readonly Func<DateTimeOffset> _ahora;
+    private readonly EstadoServicio? _estado;
+    private readonly SaneadorSecretos _saneador;
 
     public EjecutorVuelta(
         ILogger<EjecutorVuelta> logger,
@@ -20,7 +22,9 @@ public class EjecutorVuelta : IEjecutorVuelta
         IRevisor revisor,
         IAlmacen almacen,
         ConfiguracionSondeo configuracionSondeo,
-        Func<DateTimeOffset>? ahora = null)
+        Func<DateTimeOffset>? ahora = null,
+        EstadoServicio? estado = null,
+        SaneadorSecretos? saneador = null)
     {
         _logger = logger;
         _clienteBitbucket = clienteBitbucket;
@@ -29,11 +33,17 @@ public class EjecutorVuelta : IEjecutorVuelta
         _almacen = almacen;
         _configuracionSondeo = configuracionSondeo;
         _ahora = ahora ?? (() => DateTimeOffset.UtcNow);
+        _estado = estado;
+        _saneador = saneador ?? SaneadorSecretos.Ninguno;
     }
 
     public async Task EjecutarAsync(CancellationToken cancelacion)
     {
         _logger.LogInformation("Iniciando vuelta de sondeo.");
+
+        int revisados = 0;
+        int omitidos = 0;
+        int fallidos = 0;
 
         var todosLosPrs = new List<PullRequest>();
 
@@ -74,6 +84,7 @@ public class EjecutorVuelta : IEjecutorVuelta
                 if (_almacen.Revisado(pr.Repositorio, pr.Numero, pr.Commit))
                 {
                     _logger.LogInformation("PR {Repositorio}#{Numero} commit {Commit} ya revisado. Saltando.", pr.Repositorio, pr.Numero, pr.Commit);
+                    omitidos++;
                     continue;
                 }
 
@@ -82,6 +93,7 @@ public class EjecutorVuelta : IEjecutorVuelta
                     _logger.LogInformation(
                         "PR {Repositorio}#{Numero} en backoff por fallos previos. Se omite hasta el próximo reintento.",
                         pr.Repositorio, pr.Numero);
+                    omitidos++;
                     continue;
                 }
 
@@ -97,12 +109,16 @@ public class EjecutorVuelta : IEjecutorVuelta
                 }
                 else
                 {
-                    _logger.LogWarning("La revisión del PR {Repositorio}#{Numero} no tuvo éxito: {Motivo}", pr.Repositorio, pr.Numero, resultadoRevision.Motivo);
-                    _almacen.MarcarFallido(pr.Repositorio, pr.Numero, pr.Commit, resultadoRevision.Motivo ?? "revisión sin éxito");
+                    string motivo = _saneador.Sanear(resultadoRevision.Motivo ?? "revisión sin éxito");
+                    _logger.LogWarning("La revisión del PR {Repositorio}#{Numero} no tuvo éxito: {Motivo}", pr.Repositorio, pr.Numero, motivo);
+                    _almacen.MarcarFallido(pr.Repositorio, pr.Numero, pr.Commit, motivo);
+                    _estado?.RegistrarError($"PR {pr.Repositorio}#{pr.Numero} sin éxito: {motivo}");
+                    fallidos++;
                     continue;
                 }
 
                 _almacen.MarcarRevisado(pr.Repositorio, pr.Numero, pr.Commit);
+                revisados++;
             }
             catch (Exception ex)
             {
@@ -123,8 +139,21 @@ public class EjecutorVuelta : IEjecutorVuelta
                     continue;
                 }
 
-                _almacen.MarcarFallido(pr.Repositorio, pr.Numero, pr.Commit, ex.Message);
+                string detalle = _saneador.Sanear(ex.Message);
+                _almacen.MarcarFallido(pr.Repositorio, pr.Numero, pr.Commit, detalle);
+                _estado?.RegistrarError($"PR {pr.Repositorio}#{pr.Numero} exception: {detalle}");
+                fallidos++;
             }
+        }
+
+        if (_estado is not null)
+        {
+            _estado.RegistrarVuelta(new ResultadoVuelta
+            {
+                PrsRevisados = revisados,
+                PrsOmitidos = omitidos,
+                PrsFallidos = fallidos,
+            });
         }
 
         _logger.LogInformation("Vuelta de sondeo finalizada.");
