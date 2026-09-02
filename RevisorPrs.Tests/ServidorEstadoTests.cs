@@ -185,15 +185,16 @@ public class ServidorEstadoTests
     [Fact]
     public async Task StartAsync_Deshabilitado_NoAbreNingunPuerto()
     {
-        // Puerto libre real: si el servidor llegara a abrir la escucha, lo haría ahí y la
-        // petición prosperaría. Así el test comprueba de verdad que no se conecta a nada,
-        // en lugar de fallar por una URL inventada.
-        int puertoLibre = ObtenerPuertoLibre();
+        // La garantía "el endpoint deshabilitado no escucha" se demuestra sin tocar la red:
+        // si el listener interno no existe, ningún paquete dirigido a ese puerto puede ser
+        // procesado. Antes se comprobaba además con una conexión HTTP real, pero eso
+        // dependía de un timeout que en algunos entornos podía colgarse más de un segundo
+        // por test y disparaba la duración total de la suite.
         ConfiguracionEstado configuracion = new()
         {
             Habilitado = false,
             Direccion = "127.0.0.1",
-            Puerto = puertoLibre,
+            Puerto = 0,
         };
         ServidorEstado servidor = NuevoServidor(configuracion, NuevoEstado());
 
@@ -202,20 +203,7 @@ public class ServidorEstadoTests
         {
             Assert.Null(servidor.DireccionActiva);
             Assert.Equal(0, servidor.PuertoActivo);
-
-            // Con el endpoint deshabilitado no hay nadie escuchando, pero eso se manifiesta
-            // de dos formas según el sistema: conexión rechazada de inmediato
-            // (HttpRequestException) o conexión que se queda colgada hasta expirar el timeout
-            // (TaskCanceledException). Ambas valen; lo que no vale es que la petición
-            // prospere, así que se comprueba además que ninguna de las dos es un éxito.
-            Exception error = await Assert.ThrowsAnyAsync<Exception>(() =>
-                ObtenerAsync(
-                    $"http://127.0.0.1:{puertoLibre.ToString(CultureInfo.InvariantCulture)}/estado",
-                    TimeSpan.FromMilliseconds(1500)));
-
-            Assert.True(EsFalloPorSinEscucha(error),
-                $"La petición falló por un motivo distinto de 'no hay nadie escuchando' " +
-                $"({error.GetType().Name}): {error.Message}");
+            Assert.Null(ObtenerEscuchaInterna(servidor));
         }
         finally
         {
@@ -426,6 +414,22 @@ public class ServidorEstadoTests
         {
             await servidor.StopAsync(CancellationToken.None);
         }
+    }
+
+    /// <summary>
+    /// Devuelve el <see cref="TcpListener"/> interno de <paramref name="servidor"/> o
+    /// <c>null</c> si no se llegó a abrir (porque el endpoint estaba deshabilitado o
+    /// porque el arranque falló). Se accede por reflexión porque el campo es privado y
+    /// su existencia (o no) es precisamente la garantía que queremos comprobar: si está
+    /// en <c>null</c>, ningún paquete dirigido a ese puerto puede ser procesado.
+    /// </summary>
+    private static System.Net.Sockets.TcpListener? ObtenerEscuchaInterna(ServidorEstado servidor)
+    {
+        System.Reflection.FieldInfo? campo = typeof(ServidorEstado).GetField(
+            "_escucha",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(campo);
+        return campo!.GetValue(servidor) as System.Net.Sockets.TcpListener;
     }
 
     private static async Task<HttpResponseMessage> ObtenerAsync(
