@@ -29,4 +29,12 @@ public class ConfiguracionLlm
     /// Vacío = sin filtrado por severidad (se conservan todos).
     /// </summary>
     public string SeveridadMinima { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Tope de tokens para la RESPUESTA del modelo (parámetro max_tokens del proveedor).
+    /// Un valor demasiado bajo hace que la respuesta llegue truncada a mitad de un JSON
+    /// y se pierdan hallazgos (RV.10b). Por defecto se deja un valor generoso para que
+    /// una revisión larga quepa entera. Se puede ajustar en appsettings.json.
+    /// </summary>
+    public int MaxTokensRespuesta { get; set; } = 8000;
 }

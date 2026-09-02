@@ -82,6 +82,19 @@ public class Revisor : IRevisor
         var (ok, json, motivo) = IntentarExtraerJson(contenidoCrudo);
         if (ok)
         {
+            // Si el JSON se recuperó de un truncado (motivo no nulo), conservamos los
+            // hallazgos válidos y registramos cuántos se perdieron: NO reintentamos,
+            // porque reintentar reproduciría los mismos hallazgos y volvería a cortar.
+            if (motivo is not null)
+            {
+                _logger.LogWarning(
+                    "La respuesta del LLM llegó truncada. {Motivo}. Se conservan los hallazgos completos.",
+                    motivo);
+                return new ResultadoRevision(
+                    Exito: true,
+                    Hallazgos: ParsearHallazgos(json!),
+                    Motivo: motivo);
+            }
             return ResultadoRevision.Ok(ParsearHallazgos(json!));
         }
 
@@ -94,6 +107,12 @@ public class Revisor : IRevisor
         (ok, json, motivo) = IntentarExtraerJson(contenidoCrudo);
         if (ok)
         {
+            if (motivo is not null)
+            {
+                _logger.LogWarning(
+                    "La respuesta del LLM llegó truncada tras el reintento. {Motivo}. Se conservan los hallazgos completos.",
+                    motivo);
+            }
             return ResultadoRevision.Ok(ParsearHallazgos(json!));
         }
 
@@ -118,6 +137,7 @@ public class Revisor : IRevisor
                 new { role = "user", content = string.Format(PromptUsuario, diff) },
             },
             response_format = new { type = "json_object" },
+            max_tokens = _config.MaxTokensRespuesta,
         };
 
         var json = JsonSerializer.Serialize(cuerpo);
@@ -146,10 +166,22 @@ public class Revisor : IRevisor
 
     /// <summary>
     /// Intenta extraer un JSON válido de la respuesta cruda del LLM.
-    /// Si viene envuelta en un bloque markdown (```json ... ``` o ``` ... ```),
-    /// se extrae el contenido del bloque sin reintentar: es la forma más común y NO es error.
-    /// El bloque puede estar precedido o seguido de prosa; se busca en cualquier posición.
-    /// Devuelve (true, json, null) si fue posible, o (false, null, motivo) si no.
+    /// Hay DOS caminos bien diferenciados:
+    ///
+    ///   1. PROSA / respuesta que NO es JSON en absoluto (con o sin bloque markdown):
+    ///      se considera un fallo de formato normal y se devuelve (false, null, motivo)
+    ///      para que el llamador (RevisarAsync) decida si reintenta. Esto es RV.10.
+    ///
+    ///   2. RESPUESTA TRUNCADA que EMPIEZA como JSON (un '{' al principio) pero llega
+    ///      cortada a mitad de un valor o de un objeto: NO es prosa, es un agotamiento
+    ///      de max_tokens. Aquí NO se reintenta (repetiría el mismo corte): se recuperan
+    ///      los hallazgos completos que se hayan podido cerrar y se devuelve
+    ///      (true, json, motivo) para que el llamador los publique como éxito parcial.
+    ///      Esto es RV.10b.
+    ///
+    /// La distinción clave está en <see cref="texto"/>.StartsWith("{"): si la respuesta
+    /// empieza por '{' NO es prosa, por mucho que no parse entero. Si no empieza por
+    /// '{', es prosa (posiblemente envuelta en markdown) y entra al camino de reintento.
     /// </summary>
     private static (bool Ok, string? Json, string? Motivo) IntentarExtraerJson(string contenidoCrudo)
     {
@@ -160,11 +192,42 @@ public class Revisor : IRevisor
 
         var texto = contenidoCrudo.Trim();
 
-        // Si la respuesta cruda NO es JSON, probamos a extraer un bloque markdown
-        // (```json ... ``` o ``` ... ```) que pueda estar en cualquier posición del texto.
-        if (!EsJsonValido(texto))
+        // Caso RV.10b: la respuesta EMPIEZA por '{', así que NO es prosa. Puede estar
+        // completa o truncada a mitad de un valor. Probamos primero el parseo directo:
+        // si funciona, es el caso normal y devolvemos (true, json, null) como siempre.
+        // Si NO funciona, intentamos RECUPERAR hallazgos completos del truncado: este
+        // camino es el de RECUPERACION y nunca devuelve (false) — o devuelve hallazgos
+        // parciales o devuelve un JSON vacío con el motivo claro. La idea es no
+        // reintentar: reintentar reproduciría exactamente los mismos hallazgos y volvería
+        // a cortar en el mismo sitio.
+        if (texto.StartsWith("{", StringComparison.Ordinal))
         {
-            texto = ExtraerJsonDeBloqueMarkdown(texto);
+            if (EsJsonValido(texto))
+            {
+                return (true, texto, null);
+            }
+
+            var (recuperado, motivoTruncado) = IntentarRecuperarJsonTruncado(texto);
+            if (recuperado is not null)
+            {
+                return (true, recuperado, motivoTruncado);
+            }
+
+            // JSON truncado del que no se ha podido recuperar ni un hallazgo completo.
+            // Devolvemos igualmente (true, ...) con un JSON vacío y motivo informativo:
+            // el PR queda marcado como exitoso pero sin hallazgos, y NUNCA se reintenta.
+            return (true, "{\"hallazgos\":[]}", "JSON truncado sin hallazgos recuperables");
+        }
+
+        // Camino RV.10: la respuesta NO empieza por '{', así que es prosa (puede llevar
+        // un JSON envuelto en un bloque markdown ```json ... ```, que es la forma más
+        // común y NO se considera error). Si tiene JSON válido (limpio o envuelto), se
+        // acepta SIN reintentar. Si no, se devuelve (false, ...) para que RevisarAsync
+        // reintente una vez.
+        var textoConBloque = ExtraerJsonDeBloqueMarkdown(texto);
+        if (!ReferenceEquals(textoConBloque, texto) && EsJsonValido(textoConBloque))
+        {
+            return (true, textoConBloque, null);
         }
 
         if (EsJsonValido(texto))
@@ -173,6 +236,62 @@ public class Revisor : IRevisor
         }
 
         return (false, null, "la respuesta no contiene un JSON válido");
+    }
+
+    /// <summary>
+    /// Dado un texto que empieza por '{' pero NO parsea como JSON, busca el último
+    /// punto de corte en el que el contenido hasta ese índice SÍ es un JSON válido
+    /// y tiene un array "hallazgos" (aunque esté truncado). Devuelve (json, motivo)
+    /// si lo encuentra; (null, null) si no hay nada recuperable.
+    /// El motivo lleva información de cuántos hallazgos se pudieron recuperar.
+    ///
+    /// Estrategia: recorremos de derecha a izquierda los puntos de corte naturales
+    /// (un '}' que cierra un objeto del array, o una ',' que separa objetos). Para
+    /// cada punto probamos sufijos que cierren la estructura al nivel necesario
+    /// (combinaciones de ']' y '}' que cierren el array "hallazgos" y el objeto raíz).
+    /// </summary>
+    private static (string? Json, string? Motivo) IntentarRecuperarJsonTruncado(string texto)
+    {
+        // Construimos los candidatos de sufijo de cierre de estructura.
+        // De más corto a más largo: solo cerrar objeto raíz, cerrar array + raíz,
+        // y por si hay objetos anidados cerrar más.
+        var sufijos = new[] { "}", "]}", "}}", "]}}", "]}}}", "]]}}}" };
+
+        // Recorremos de derecha a izquierda los puntos de corte naturales:
+        // un '}' (fin de objeto) o una ',' (separador entre objetos del array).
+        for (var i = texto.Length - 1; i >= 0; i--)
+        {
+            var c = texto[i];
+            if (c != '}' && c != ',') continue;
+            foreach (var sufijo in sufijos)
+            {
+                var candidato = texto.Substring(0, i + 1) + sufijo;
+                if (!EsJsonValido(candidato)) continue;
+
+                // El JSON recuperado debe tener un array "hallazgos".
+                int total;
+                try
+                {
+                    using var doc = JsonDocument.Parse(candidato);
+                    if (!doc.RootElement.TryGetProperty("hallazgos", out var arr)
+                        || arr.ValueKind != JsonValueKind.Array)
+                    {
+                        continue;
+                    }
+                    total = arr.GetArrayLength();
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
+
+                var motivo = total == 0
+                    ? "JSON truncado sin hallazgos recuperables"
+                    : $"JSON truncado: {total} hallazgo(s) recuperado(s) antes del corte";
+                return (candidato, motivo);
+            }
+        }
+        return (null, null);
     }
 
     private static bool EsJsonValido(string texto)
