@@ -98,6 +98,7 @@ public sealed class SaneadorSecretos
             configuracion["Llm:ClaveApi"],
             configuracion["Bitbucket:ClaveAplicacion"],
             configuracion["Bitbucket:Usuario"],
+            configuracion["Bitbucket:Token"],
         });
     }
 }

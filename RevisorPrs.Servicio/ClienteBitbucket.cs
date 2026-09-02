@@ -34,6 +34,56 @@ public class ClienteBitbucket : IClienteBitbucket
         EsperarEntreReintentos = EsperarEntreReintentosPorDefecto;
     }
 
+    /// <summary>
+    /// Valida que la configuración de Bitbucket tiene exactamente UN método de autenticación
+    /// relleno. Falla con un mensaje accionable si trae los dos o ninguno.
+    /// </summary>
+    public static void ValidarConfiguracion(ConfiguracionBitbucket configuracion)
+    {
+        ArgumentNullException.ThrowIfNull(configuracion);
+
+        bool basicaRellenada = !string.IsNullOrWhiteSpace(configuracion.Usuario)
+            && !string.IsNullOrWhiteSpace(configuracion.ClaveAplicacion);
+        bool tokenRellenado = !string.IsNullOrWhiteSpace(configuracion.Token);
+
+        switch (configuracion.MetodoAutenticacion)
+        {
+            case MetodoAutenticacionBitbucket.Basica:
+                if (!basicaRellenada)
+                {
+                    throw new InvalidOperationException(
+                        "Configuración de Bitbucket inválida: el método es 'Basica' pero faltan Usuario o ClaveAplicacion. "
+                        + "Rellena Bitbucket:Usuario y Bitbucket:ClaveAplicacion, o cambia Bitbucket:MetodoAutenticacion a 'Token' y rellena Bitbucket:Token.");
+                }
+                if (tokenRellenado)
+                {
+                    throw new InvalidOperationException(
+                        "Configuración de Bitbucket inválida: el método es 'Basica' pero también hay un Token configurado. "
+                        + "Quita el campo Bitbucket:Token o cambia Bitbucket:MetodoAutenticacion a 'Token'.");
+                }
+                break;
+
+            case MetodoAutenticacionBitbucket.Token:
+                if (!tokenRellenado)
+                {
+                    throw new InvalidOperationException(
+                        "Configuración de Bitbucket inválida: el método es 'Token' pero falta Bitbucket:Token. "
+                        + "Rellena Bitbucket:Token, o cambia Bitbucket:MetodoAutenticacion a 'Basica' y rellena Bitbucket:Usuario y Bitbucket:ClaveAplicacion.");
+                }
+                if (basicaRellenada)
+                {
+                    throw new InvalidOperationException(
+                        "Configuración de Bitbucket inválida: el método es 'Token' pero también hay Usuario y ClaveAplicacion configurados. "
+                        + "Quita Bitbucket:Usuario y Bitbucket:ClaveAplicacion, o cambia Bitbucket:MetodoAutenticacion a 'Basica'.");
+                }
+                break;
+
+            default:
+                throw new InvalidOperationException(
+                    $"Configuración de Bitbucket inválida: método de autenticación desconocido '{configuracion.MetodoAutenticacion}'.");
+        }
+    }
+
     public async Task<IEnumerable<EventoPr>> ListarPrsAbiertos(string repositorio)
     {
         var result = new List<EventoPr>();
@@ -42,7 +92,7 @@ public class ClienteBitbucket : IClienteBitbucket
         while (!string.IsNullOrEmpty(url))
         {
             var request = new HttpRequestMessage(HttpMethod.Get, url!);
-            PonerAutenticacionBasica(request);
+            PonerAutenticacion(request);
 
             var response = await EnviarConReintentos(request, repositorio, "listar PRs");
 
@@ -105,7 +155,7 @@ public class ClienteBitbucket : IClienteBitbucket
 
         string url = $"https://api.bitbucket.org/2.0/repositories/{repositorio}/pullrequests/{numero}/diff";
         var request = new HttpRequestMessage(HttpMethod.Get, url);
-        PonerAutenticacionBasica(request);
+        PonerAutenticacion(request);
 
         var response = await EnviarConReintentos(request, repositorio, $"obtener diff PR #{numero}");
 
@@ -154,7 +204,7 @@ public class ClienteBitbucket : IClienteBitbucket
 
         var json = JsonSerializer.Serialize(payload);
         var requestMsg = new HttpRequestMessage(HttpMethod.Post, url);
-        PonerAutenticacionBasica(requestMsg);
+        PonerAutenticacion(requestMsg);
         requestMsg.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
         var response = await EnviarConReintentos(requestMsg, repositorio, $"publicar comentario PR #{numero}");
@@ -272,16 +322,40 @@ public class ClienteBitbucket : IClienteBitbucket
         return clon;
     }
 
-    private void PonerAutenticacionBasica(HttpRequestMessage request)
+    /// <summary>
+    /// Coloca la cabecera Authorization en la petición según el método configurado.
+    /// </summary>
+    private void PonerAutenticacion(HttpRequestMessage request)
     {
-        if (!string.IsNullOrEmpty(_config.Usuario) && !string.IsNullOrEmpty(_config.ClaveAplicacion))
+        switch (_config.MetodoAutenticacion)
         {
-            var token = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{_config.Usuario}:{_config.ClaveAplicacion}"));
-            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", token);
-        }
-        else
-        {
-            _logger.LogWarning("Credenciales de Bitbucket no configuradas.");
+            case MetodoAutenticacionBitbucket.Basica:
+                if (!string.IsNullOrEmpty(_config.Usuario) && !string.IsNullOrEmpty(_config.ClaveAplicacion))
+                {
+                    var credenciales = Convert.ToBase64String(
+                        Encoding.ASCII.GetBytes($"{_config.Usuario}:{_config.ClaveAplicacion}"));
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credenciales);
+                }
+                else
+                {
+                    _logger.LogWarning("Credenciales de Bitbucket no configuradas.");
+                }
+                break;
+
+            case MetodoAutenticacionBitbucket.Token:
+                if (!string.IsNullOrEmpty(_config.Token))
+                {
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.Token);
+                }
+                else
+                {
+                    _logger.LogWarning("Token de Bitbucket no configurado.");
+                }
+                break;
+
+            default:
+                _logger.LogWarning("Método de autenticación de Bitbucket no soportado.");
+                break;
         }
     }
 }

@@ -18,6 +18,10 @@ ConfiguracionLlm configuracionLlmInicial = new();
 builder.Configuration.GetSection("Llm").Bind(configuracionLlmInicial);
 Revisor.ValidarConfiguracion(configuracionLlmInicial);
 
+ConfiguracionBitbucket configuracionBitbucketInicial = new();
+builder.Configuration.GetSection("Bitbucket").Bind(configuracionBitbucketInicial);
+ClienteBitbucket.ValidarConfiguracion(configuracionBitbucketInicial);
+
 // El endpoint /estado (RV.20) solo puede escucharse en loopback: si la configuración
 // pide una interfaz pública, el servicio falla aquí en lugar de exponer el estado.
 ConfiguracionEstado configuracionEstadoInicial = new();
