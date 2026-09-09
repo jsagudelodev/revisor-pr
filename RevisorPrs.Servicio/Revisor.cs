@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -23,8 +24,13 @@ public class Revisor : IRevisor
     private readonly ConfiguracionLlm _config;
     private readonly ILogger<Revisor> _logger;
 
-    private const string PromptUsuario =
-        "Analiza el siguiente diff de un pull request y devuelve los hallazgos en JSON:\n\n{0}";
+    /// <summary>
+    /// Marcas que delimitan el material escrito por quien abre el pull request. Existen
+    /// para que el modelo pueda separar sus instrucciones del contenido a revisar: el
+    /// título, la descripción y el diff los controla el autor del PR.
+    /// </summary>
+    private const string InicioMaterial = "<<<MATERIAL_A_REVISAR>>>";
+    private const string FinMaterial = "<<<FIN_MATERIAL_A_REVISAR>>>";
 
     public Revisor(
         HttpClient httpClient,
@@ -70,15 +76,20 @@ public class Revisor : IRevisor
     private const string MensajeReintento =
         "Tu respuesta anterior no fue un JSON válido. Responde ÚNICAMENTE con un JSON válido que cumpla el formato pedido, sin texto antes ni después.";
 
-    public async Task<ResultadoRevision> RevisarAsync(string diff, CancellationToken token = default)
+    public async Task<ResultadoRevision> RevisarAsync(
+        string diff,
+        ContextoRevision? contexto = null,
+        CancellationToken token = default)
     {
         if (diff is null)
         {
             throw new ArgumentNullException(nameof(diff));
         }
 
+        string mensajeUsuario = ComponerMensajeUsuario(diff, contexto);
+
         // Primer intento con el prompt habitual.
-        var contenidoCrudo = await EnviarAlLlmAsync(diff, PromptRevision.Mensaje, token);
+        var (contenidoCrudo, consumo) = await EnviarAlLlmAsync(mensajeUsuario, PromptRevision.Mensaje, token);
         var (ok, json, motivo) = IntentarExtraerJson(contenidoCrudo);
         if (ok)
         {
@@ -93,9 +104,10 @@ public class Revisor : IRevisor
                 return new ResultadoRevision(
                     Exito: true,
                     Hallazgos: ParsearHallazgos(json!),
-                    Motivo: motivo);
+                    Motivo: motivo,
+                    Consumo: consumo);
             }
-            return ResultadoRevision.Ok(ParsearHallazgos(json!));
+            return ResultadoRevision.Ok(ParsearHallazgos(json!), consumo);
         }
 
         // Un único reintento pidiendo explícitamente solo JSON.
@@ -103,7 +115,12 @@ public class Revisor : IRevisor
             "La respuesta del LLM no es JSON válido ({Motivo}). Se reintenta una vez pidiendo solo JSON.",
             motivo);
 
-        contenidoCrudo = await EnviarAlLlmAsync(diff, MensajeReintento, token);
+        // El reintento se paga igual que el primer intento: el consumo se suma.
+        var (contenidoReintento, consumoReintento) =
+            await EnviarAlLlmAsync(mensajeUsuario, MensajeReintento, token);
+        contenidoCrudo = contenidoReintento;
+        consumo += consumoReintento;
+
         (ok, json, motivo) = IntentarExtraerJson(contenidoCrudo);
         if (ok)
         {
@@ -112,8 +129,18 @@ public class Revisor : IRevisor
                 _logger.LogWarning(
                     "La respuesta del LLM llegó truncada tras el reintento. {Motivo}. Se conservan los hallazgos completos.",
                     motivo);
+
+                // El motivo se conserva igual que en el primer intento. Antes se
+                // descartaba aqui, ocultando informacion de diagnostico justo en el
+                // camino mas raro, que es cuando hace falta.
+                return new ResultadoRevision(
+                    Exito: true,
+                    Hallazgos: ParsearHallazgos(json!),
+                    Motivo: motivo,
+                    Consumo: consumo);
             }
-            return ResultadoRevision.Ok(ParsearHallazgos(json!));
+
+            return ResultadoRevision.Ok(ParsearHallazgos(json!), consumo);
         }
 
         // Segundo intento también inválido: marcamos el PR como FALLIDO sin hallazgos
@@ -123,10 +150,92 @@ public class Revisor : IRevisor
             motivo);
 
         return ResultadoRevision.Fallo(
-            $"La respuesta del LLM no es JSON válido tras un reintento ({motivo}).");
+            $"La respuesta del LLM no es JSON válido tras un reintento ({motivo}).", consumo);
     }
 
-    private async Task<string> EnviarAlLlmAsync(string diff, string mensajeSistema, CancellationToken token)
+    /// <summary>Sustituto visible de una marca delimitadora que venía en el material.</summary>
+    private const string MarcaNeutralizada = "[marca de bloque omitida]";
+
+    /// <summary>
+    /// Quita del texto del autor las marcas delimitadoras, para que no pueda cerrar el
+    /// bloque antes de tiempo y colar instrucciones fuera de él.
+    /// </summary>
+    /// <remarks>
+    /// Es el ataque evidente contra nuestro propio esquema: si el título o el diff
+    /// contienen la marca de cierre, todo lo que viniera después quedaría presentado al
+    /// modelo como si lo dijéramos nosotros.
+    /// </remarks>
+    private static string Neutralizar(string? texto)
+    {
+        if (string.IsNullOrEmpty(texto))
+        {
+            return string.Empty;
+        }
+
+        return texto
+            .Replace(FinMaterial, MarcaNeutralizada, StringComparison.OrdinalIgnoreCase)
+            .Replace(InicioMaterial, MarcaNeutralizada, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Arma el mensaje de usuario: primero la intención declarada del pull request, si se
+    /// conoce, y después el diff.
+    /// </summary>
+    /// <remarks>
+    /// Sin la intención el modelo no puede distinguir un cambio deliberado que el autor
+    /// explica de un descuido, y esa confusión es una fuente grande de falsos positivos.
+    ///
+    /// Todo el material va entre marcas de bloque y pasa por <see cref="Neutralizar"/>,
+    /// porque lo escribe quien abre el pull request. Delimitar es solo la primera capa:
+    /// la que de verdad acota el daño es comprobar la SALIDA del modelo —que un hallazgo
+    /// hable de un archivo del diff y que su severidad esté en el juego conocido—, porque
+    /// no depende de que el modelo obedezca.
+    /// </remarks>
+    private static string ComponerMensajeUsuario(string diff, ContextoRevision? contexto)
+    {
+        var mensaje = new StringBuilder();
+
+        // Las convenciones del equipo van PRIMERO: son el criterio con el que hay que
+        // juzgar todo lo demás. Y van fuera de las marcas de material a revisar porque
+        // no las escribe el autor del pull request: viven en la rama de destino y han
+        // pasado por la revisión del equipo para llegar ahí.
+        if (contexto is not null && contexto.TieneGuia)
+        {
+            mensaje.Append("Convenciones acordadas por el equipo de este repositorio. ");
+            mensaje.Append("Aplícalas como criterio de revisión.\n\n");
+            mensaje.Append(contexto.Guia!.Trim()).Append("\n\n");
+        }
+
+        if (contexto is not null && contexto.TieneAlgo)
+        {
+            mensaje.Append("Intención declarada por el autor del pull request.\n");
+            mensaje.Append(InicioMaterial).Append('\n');
+
+            string titulo = Neutralizar(contexto.Titulo).Trim();
+            if (titulo.Length > 0)
+            {
+                mensaje.Append("Título: ").Append(titulo).Append('\n');
+            }
+
+            string descripcion = Neutralizar(contexto.Descripcion).Trim();
+            if (descripcion.Length > 0)
+            {
+                mensaje.Append("Descripción:\n").Append(descripcion).Append('\n');
+            }
+
+            mensaje.Append(FinMaterial).Append("\n\n");
+        }
+
+        mensaje.Append("Analiza el siguiente diff y devuelve los hallazgos en JSON.\n");
+        mensaje.Append(InicioMaterial).Append('\n');
+        mensaje.Append(Neutralizar(diff)).Append('\n');
+        mensaje.Append(FinMaterial);
+
+        return mensaje.ToString();
+    }
+
+    private async Task<(string Contenido, ConsumoTokens Consumo)> EnviarAlLlmAsync(
+        string mensajeUsuario, string mensajeSistema, CancellationToken token)
     {
         var cuerpo = new
         {
@@ -134,7 +243,7 @@ public class Revisor : IRevisor
             messages = new object[]
             {
                 new { role = "system", content = mensajeSistema },
-                new { role = "user", content = string.Format(PromptUsuario, diff) },
+                new { role = "user", content = mensajeUsuario },
             },
             response_format = new { type = "json_object" },
             max_tokens = _config.MaxTokensRespuesta,
@@ -150,19 +259,47 @@ public class Revisor : IRevisor
         // Logueamos la longitud del diff para diagnóstico, nunca su contenido ni la clave.
         _logger.LogInformation(
             "Enviando diff al LLM para revisión ({Caracteres} caracteres).",
-            diff.Length);
+            mensajeUsuario.Length);
 
         using var response = await _httpClient.SendAsync(request, token);
         response.EnsureSuccessStatusCode();
 
         var stream = await response.Content.ReadAsStreamAsync(token);
         using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: token);
-        return doc.RootElement
+        string contenido = doc.RootElement
             .GetProperty("choices")[0]
             .GetProperty("message")
             .GetProperty("content")
             .GetString() ?? string.Empty;
+
+        return (contenido, LeerConsumo(doc.RootElement));
     }
+
+    /// <summary>
+    /// Lee el bloque "usage" que devuelven las APIs compatibles con chat completions.
+    /// </summary>
+    /// <remarks>
+    /// Es opcional a propósito: un proveedor que no lo devuelva no puede tumbar la
+    /// revisión. Sin este dato no se puede informar del coste, que es peor que tenerlo
+    /// pero mucho mejor que fallar.
+    /// </remarks>
+    private static ConsumoTokens LeerConsumo(JsonElement raiz)
+    {
+        if (!raiz.TryGetProperty("usage", out var uso) || uso.ValueKind != JsonValueKind.Object)
+        {
+            return ConsumoTokens.Ninguno;
+        }
+
+        return new ConsumoTokens(
+            LeerEntero(uso, "prompt_tokens"), LeerEntero(uso, "completion_tokens"));
+    }
+
+    private static int LeerEntero(JsonElement objeto, string propiedad)
+        => objeto.TryGetProperty(propiedad, out var valor)
+            && valor.ValueKind == JsonValueKind.Number
+            && valor.TryGetInt32(out int n)
+                ? n
+                : 0;
 
     /// <summary>
     /// Intenta extraer un JSON válido de la respuesta cruda del LLM.
@@ -239,59 +376,163 @@ public class Revisor : IRevisor
     }
 
     /// <summary>
-    /// Dado un texto que empieza por '{' pero NO parsea como JSON, busca el último
-    /// punto de corte en el que el contenido hasta ese índice SÍ es un JSON válido
-    /// y tiene un array "hallazgos" (aunque esté truncado). Devuelve (json, motivo)
-    /// si lo encuentra; (null, null) si no hay nada recuperable.
-    /// El motivo lleva información de cuántos hallazgos se pudieron recuperar.
-    ///
-    /// Estrategia: recorremos de derecha a izquierda los puntos de corte naturales
-    /// (un '}' que cierra un objeto del array, o una ',' que separa objetos). Para
-    /// cada punto probamos sufijos que cierren la estructura al nivel necesario
-    /// (combinaciones de ']' y '}' que cierren el array "hallazgos" y el objeto raíz).
+    /// Dado un texto que empieza por '{' pero NO parsea como JSON, recupera los
+    /// hallazgos completos que hubiera antes del corte. Devuelve (json, motivo) si
+    /// encuentra algo aprovechable; (null, null) si no.
     /// </summary>
+    /// <remarks>
+    /// Un solo recorrido de izquierda a derecha, llevando la pila de llaves y corchetes
+    /// abiertos y respetando las cadenas y sus escapes. Se anota la posicion del ultimo
+    /// elemento del array "hallazgos" que llego a cerrarse, y al final se cierra la
+    /// estructura con EXACTAMENTE los cierres que quedan pendientes en la pila.
+    ///
+    /// La version anterior recorria de derecha a izquierda probando seis sufijos fijos
+    /// en cada posible punto de corte, y reparseaba el prefijo entero en cada prueba: el
+    /// coste crecia con el cuadrado del tamano, justo en el caso de una respuesta larga
+    /// que ya venia mal. Ademas los sufijos eran adivinanzas; con la pila, el cierre es
+    /// el correcto por construccion.
+    /// </remarks>
     private static (string? Json, string? Motivo) IntentarRecuperarJsonTruncado(string texto)
     {
-        // Construimos los candidatos de sufijo de cierre de estructura.
-        // De más corto a más largo: solo cerrar objeto raíz, cerrar array + raíz,
-        // y por si hay objetos anidados cerrar más.
-        var sufijos = new[] { "}", "]}", "}}", "]}}", "]}}}", "]]}}}" };
-
-        // Recorremos de derecha a izquierda los puntos de corte naturales:
-        // un '}' (fin de objeto) o una ',' (separador entre objetos del array).
-        for (var i = texto.Length - 1; i >= 0; i--)
+        int inicioArray = LocalizarArrayHallazgos(texto);
+        if (inicioArray < 0)
         {
-            var c = texto[i];
-            if (c != '}' && c != ',') continue;
-            foreach (var sufijo in sufijos)
+            return (null, null);
+        }
+
+        var pila = new Stack<char>();
+        bool enCadena = false;
+        bool escapado = false;
+
+        // Profundidad de la pila justo dentro del array: un elemento se ha cerrado
+        // cuando volvemos a este nivel tras un '}'.
+        int profundidadElemento = -1;
+        int finUltimoElemento = -1;
+        int hallazgosCompletos = 0;
+
+        for (int i = 0; i < texto.Length; i++)
+        {
+            char c = texto[i];
+
+            if (enCadena)
             {
-                var candidato = texto.Substring(0, i + 1) + sufijo;
-                if (!EsJsonValido(candidato)) continue;
+                if (escapado) { escapado = false; }
+                else if (c == '\\') { escapado = true; }
+                else if (c == '"') { enCadena = false; }
+                continue;
+            }
 
-                // El JSON recuperado debe tener un array "hallazgos".
-                int total;
-                try
-                {
-                    using var doc = JsonDocument.Parse(candidato);
-                    if (!doc.RootElement.TryGetProperty("hallazgos", out var arr)
-                        || arr.ValueKind != JsonValueKind.Array)
+            switch (c)
+            {
+                case '"':
+                    enCadena = true;
+                    break;
+
+                case '{':
+                case '[':
+                    pila.Push(c);
+                    if (i == inicioArray)
                     {
-                        continue;
+                        profundidadElemento = pila.Count;
                     }
-                    total = arr.GetArrayLength();
-                }
-                catch (JsonException)
-                {
-                    continue;
-                }
+                    break;
 
-                var motivo = total == 0
-                    ? "JSON truncado sin hallazgos recuperables"
-                    : $"JSON truncado: {total} hallazgo(s) recuperado(s) antes del corte";
-                return (candidato, motivo);
+                case '}':
+                case ']':
+                    if (pila.Count == 0)
+                    {
+                        // Estructura incoherente: no hay nada de fiar aqui.
+                        return (null, null);
+                    }
+                    pila.Pop();
+                    if (c == '}' && profundidadElemento > 0 && pila.Count == profundidadElemento)
+                    {
+                        finUltimoElemento = i;
+                        hallazgosCompletos++;
+                    }
+                    break;
             }
         }
-        return (null, null);
+
+        if (finUltimoElemento < 0)
+        {
+            // El corte llego antes de cerrar ni un solo hallazgo.
+            return (null, null);
+        }
+
+        // Se recorta justo tras el ultimo hallazgo entero y se cierra lo que quede
+        // abierto. Como la pila esta calculada, el cierre es exacto y no hay que
+        // adivinar combinaciones de corchetes.
+        var recuperado = new StringBuilder(texto, 0, finUltimoElemento + 1, texto.Length + 8);
+        foreach (char abierto in RecalcularPendientes(texto, finUltimoElemento))
+        {
+            recuperado.Append(abierto == '{' ? '}' : ']');
+        }
+
+        string candidato = recuperado.ToString();
+        if (!EsJsonValido(candidato))
+        {
+            return (null, null);
+        }
+
+        return (candidato, $"JSON truncado: {hallazgosCompletos} hallazgo(s) recuperado(s) antes del corte");
+    }
+
+    /// <summary>
+    /// Devuelve, de dentro hacia fuera, los delimitadores que siguen abiertos tras el
+    /// caracter indicado.
+    /// </summary>
+    private static List<char> RecalcularPendientes(string texto, int hasta)
+    {
+        var pila = new Stack<char>();
+        bool enCadena = false;
+        bool escapado = false;
+
+        for (int i = 0; i <= hasta; i++)
+        {
+            char c = texto[i];
+
+            if (enCadena)
+            {
+                if (escapado) { escapado = false; }
+                else if (c == '\\') { escapado = true; }
+                else if (c == '"') { enCadena = false; }
+                continue;
+            }
+
+            if (c == '"') { enCadena = true; }
+            else if (c == '{' || c == '[') { pila.Push(c); }
+            else if ((c == '}' || c == ']') && pila.Count > 0) { pila.Pop(); }
+        }
+
+        return pila.ToList();
+    }
+
+    /// <summary>
+    /// Posicion del '[' que abre el array "hallazgos", o -1 si no aparece.
+    /// </summary>
+    private static int LocalizarArrayHallazgos(string texto)
+    {
+        int clave = texto.IndexOf("\"hallazgos\"", StringComparison.OrdinalIgnoreCase);
+        if (clave < 0)
+        {
+            return -1;
+        }
+
+        for (int i = clave + "\"hallazgos\"".Length; i < texto.Length; i++)
+        {
+            char c = texto[i];
+            if (c == '[')
+            {
+                return i;
+            }
+            if (!char.IsWhiteSpace(c) && c != ':')
+            {
+                return -1;
+            }
+        }
+
+        return -1;
     }
 
     private static bool EsJsonValido(string texto)

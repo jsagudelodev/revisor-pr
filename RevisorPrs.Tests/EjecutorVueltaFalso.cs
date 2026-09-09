@@ -1,3 +1,6 @@
+using System.Threading.Tasks;
+using System.Threading;
+using System.Collections.Generic;
 using RevisorPrs.Servicio;
 
 namespace RevisorPrs.Tests;
@@ -13,6 +16,15 @@ internal sealed class EjecutorVueltaFalso : IEjecutorVuelta
     {
         Llamadas++;
         _primeraLlamadaTcs.TrySetResult();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Pull requests revisados por aviso de webhook (C2).</summary>
+    public List<PullRequest> RevisadosPorAviso { get; } = new();
+
+    public Task RevisarPrAsync(PullRequest pr, CancellationToken cancelacion)
+    {
+        RevisadosPorAviso.Add(pr);
         return Task.CompletedTask;
     }
 }

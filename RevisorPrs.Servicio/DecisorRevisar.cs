@@ -4,7 +4,22 @@ using Microsoft.Extensions.Logging;
 
 namespace RevisorPrs.Servicio;
 
-public record PullRequest(string Repositorio, int Numero, string Commit);
+/// <summary>
+/// Pull request pendiente de revisar.
+/// </summary>
+/// <remarks>
+/// Arrastra el titulo y la descripcion porque el modelo los necesita para entender la
+/// INTENCION del cambio: sin ellos no distingue un arreglo deliberado de un descuido.
+/// Son opcionales porque el ejecutor tambien reconstruye pull requests desde el almacen
+/// de fallos, donde solo se guardan repositorio, numero y commit.
+/// </remarks>
+public record PullRequest(
+    string Repositorio,
+    int Numero,
+    string Commit,
+    string? Titulo = null,
+    string? Descripcion = null,
+    string? RamaDestino = null);
 
 public class DecisorRevisar
 {
@@ -106,18 +121,11 @@ public class DecisorRevisar
             }
         }
 
-        // Si en esta vuelta hay PRs con un commit nuevo sobre uno ya visto,
-        // esos son los únicos que se revisan: un PR totalmente nuevo no debe
-        // mezclarse con un re-análisis en la misma vuelta (RV.14b).
-        var prsActualizados = prsParaRevisar
-            .Where(p => _prsRevisados.ContainsKey((p.Repositorio, p.Numero)))
-            .ToList();
-
-        if (prsActualizados.Count > 0)
-        {
-            prsParaRevisar = prsActualizados;
-        }
-
+        // Antes, si en la vuelta habia algun PR con commit nuevo, se descartaban los
+        // PRs completamente nuevos y se dejaban para la siguiente. No se perdian, pero
+        // esperaban un intervalo entero sin motivo: el comentario que lo justificaba no
+        // explicaba que problema evitaba, y las guardas de idempotencia del almacen ya
+        // impiden revisar dos veces. Ahora se devuelven todos.
         foreach (var pr in prsParaRevisar)
         {
             _prsRevisados[(pr.Repositorio, pr.Numero)] = pr.Commit;

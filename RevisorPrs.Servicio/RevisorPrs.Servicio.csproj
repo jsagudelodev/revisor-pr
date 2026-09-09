@@ -8,7 +8,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- El proyecto de pruebas ejercita piezas internas (la autenticacion del webhook,
+         el troceo de la peticion HTTP) sin obligar a exponerlas en la API publica. -->
+    <InternalsVisibleTo Include="RevisorPrs.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.4" />
   </ItemGroup>

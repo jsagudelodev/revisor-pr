@@ -89,16 +89,38 @@ public sealed class SaneadorSecretos
     /// credenciales de Bitbucket). Se leen por nombre de clave para no depender de
     /// las clases de opciones ni de que estén rellenas.
     /// </summary>
+    /// <remarks>
+    /// El nombre de usuario de Bitbucket NO entra en la lista, aunque antes sí estaba.
+    /// No es una credencial —aparece en las URLs del propio Bitbucket— y enmascararlo
+    /// destrozaba el log: el saneador sustituye subcadenas, así que un usuario corto o
+    /// común como "dev" convertía cada aparición de esas tres letras en la marca, y
+    /// mensajes como "Sondeo iniciado. Cada 5 minuto(s)" salían mutilados.
+    ///
+    /// Lo que sí se añade es la credencial Basic ya codificada, que es la forma en la
+    /// que el usuario y la clave viajan de verdad en la cabecera Authorization:
+    /// enmascarar solo la clave en claro no serviría si ese valor codificado acabara
+    /// en un mensaje de error.
+    /// </remarks>
     public static SaneadorSecretos DesdeConfiguracion(Microsoft.Extensions.Configuration.IConfiguration configuracion)
     {
         ArgumentNullException.ThrowIfNull(configuracion);
 
-        return new SaneadorSecretos(new[]
+        string? usuario = configuracion["Bitbucket:Usuario"];
+        string? claveAplicacion = configuracion["Bitbucket:ClaveAplicacion"];
+
+        var valores = new List<string?>
         {
             configuracion["Llm:ClaveApi"],
-            configuracion["Bitbucket:ClaveAplicacion"],
-            configuracion["Bitbucket:Usuario"],
+            claveAplicacion,
             configuracion["Bitbucket:Token"],
-        });
+        };
+
+        if (!string.IsNullOrWhiteSpace(usuario) && !string.IsNullOrWhiteSpace(claveAplicacion))
+        {
+            valores.Add(Convert.ToBase64String(
+                System.Text.Encoding.ASCII.GetBytes($"{usuario}:{claveAplicacion}")));
+        }
+
+        return new SaneadorSecretos(valores);
     }
 }

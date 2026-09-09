@@ -22,7 +22,8 @@ namespace RevisorPrs.Servicio;
 public record ResultadoRevision(
     bool Exito,
     IReadOnlyList<Hallazgo> Hallazgos,
-    string? Motivo)
+    string? Motivo,
+    ConsumoTokens Consumo = default)
 {
     /// <summary>
     /// Crea un resultado exitoso con la lista de hallazgos indicada (puede ser vacía).
@@ -31,9 +32,22 @@ public record ResultadoRevision(
         => new(Exito: true, Hallazgos: hallazgos, Motivo: null);
 
     /// <summary>
+    /// Crea un resultado exitoso anotando lo que costo la revision.
+    /// </summary>
+    public static ResultadoRevision Ok(IReadOnlyList<Hallazgo> hallazgos, ConsumoTokens consumo)
+        => new(Exito: true, Hallazgos: hallazgos, Motivo: null, Consumo: consumo);
+
+    /// <summary>
     /// Crea un resultado fallido con un motivo legible. La lista de hallazgos
     /// queda FORZADA a vacía para impedir que el llamador publique basura en un PR.
     /// </summary>
     public static ResultadoRevision Fallo(string motivo)
         => new(Exito: false, Hallazgos: System.Array.Empty<Hallazgo>(), Motivo: motivo);
+
+    /// <summary>
+    /// Crea un resultado fallido anotando lo que se gasto igualmente: una revision que
+    /// no sirvio se paga lo mismo, asi que ocultarla falsearia el coste.
+    /// </summary>
+    public static ResultadoRevision Fallo(string motivo, ConsumoTokens consumo)
+        => new(Exito: false, Hallazgos: System.Array.Empty<Hallazgo>(), Motivo: motivo, Consumo: consumo);
 }

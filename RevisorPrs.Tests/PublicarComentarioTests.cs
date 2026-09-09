@@ -1,3 +1,4 @@
+using System;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -101,7 +102,14 @@ public class PublicarComentarioTests
 
         Assert.True(root.TryGetProperty("content", out var contentProp));
         Assert.True(contentProp.TryGetProperty("raw", out var rawProp));
-        Assert.Equal(hallazgo.Resumen, rawProp.GetString());
+
+        // El comentario lleva severidad, resumen Y detalle. Antes se publicaba solo el
+        // resumen: la justificación que el modelo genera no llegaba al pull request.
+        string raw = rawProp.GetString()!;
+        Assert.Equal("**Error** · Something went wrong\n\nDetails here", raw);
+
+        // Al ir anclado, Bitbucket ya muestra archivo y línea: no se repiten en el texto.
+        Assert.DoesNotContain("src/Foo.cs", raw, StringComparison.Ordinal);
 
         Assert.True(root.TryGetProperty("inline", out var inlineProp));
         Assert.True(inlineProp.TryGetProperty("path", out var pathProp));
@@ -133,16 +141,17 @@ public class PublicarComentarioTests
 
         Assert.True(root.TryGetProperty("content", out var contentProp));
         Assert.True(contentProp.TryGetProperty("raw", out var rawProp));
-        // Expected format: "archivo:linea Resumen"
-        string expectedRaw = $"src/Foo.cs:0 {hallazgo.Resumen}";
-        Assert.Equal(expectedRaw, rawProp.GetString());
+
+        // Sin ancla, la ubicación va dentro del texto. Y sin línea no se inventa un
+        // ":0", que es lo que se publicaba antes.
+        Assert.Equal("**Aviso** · `src/Foo.cs` · Maybe something\n\nDetails", rawProp.GetString());
 
         // Should NOT have inline property
         Assert.False(root.TryGetProperty("inline", out _));
     }
 
     [Fact]
-    public async Task PublicarComentario_ConErrorDeApi_NoLanza()
+    public async Task PublicarComentario_ConErrorDeApi_Lanza()
     {
         // Arrange: simulamos 3 errores 500 seguidos (se agotan los reintentos).
         var handler = new FakeHttpMessageHandler(
@@ -152,13 +161,16 @@ public class PublicarComentarioTests
         );
 
         var cliente = CrearCliente(handler);
+        cliente.EsperarEntreReintentos = (_, _) => Task.CompletedTask;
         var hallazgo = new Hallazgo("src/Bar.cs", 10, "error", "Fail", "detail");
 
-        // Act
-        // Should not throw
-        await cliente.PublicarComentario("workspace/repo", 789, hallazgo);
+        // Act: antes se tragaba el fallo. Ahora se propaga, porque el ejecutor anota
+        // el comentario como publicado en cuanto esta llamada vuelve: dar por buena una
+        // publicación que no ocurrió perdería el hallazgo para siempre.
+        await Assert.ThrowsAsync<HttpRequestException>(
+            () => cliente.PublicarComentario("workspace/repo", 789, hallazgo));
 
-        // Assert: el cliente reintenta hasta agotar el tope sin lanzar.
+        // Assert: el cliente agotó el tope de reintentos antes de rendirse.
         Assert.Equal(3, handler.Requests.Count);
     }
 }

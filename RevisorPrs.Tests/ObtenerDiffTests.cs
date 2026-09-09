@@ -90,20 +90,52 @@ index e69de29..d2ca2fb 100644
     }
 
     [Fact]
-    public async Task ObtenerDiff_ConErrorDeApi_DevuelveVacioSinLanzar()
+    public async Task ObtenerDiff_ConErrorDeApi_Lanza()
     {
-        // Arrange: el cliente reintenta hasta agotar el tope (3) ante 5xx.
+        // El cliente reintenta hasta agotar el tope (3) ante 5xx y entonces falla.
+        //
+        // Antes devolvía una cadena vacía, indistinguible de un PR sin cambios: el
+        // ejecutor la enviaba al modelo, recibía cero hallazgos y marcaba el PR como
+        // revisado para ese commit, perdiendo la revisión de forma permanente.
         var handler = new FakeHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.InternalServerError),
             new HttpResponseMessage(HttpStatusCode.InternalServerError),
             new HttpResponseMessage(HttpStatusCode.InternalServerError)
         );
         var cliente = CrearCliente(handler);
+        cliente.EsperarEntreReintentos = (_, _) => Task.CompletedTask;
 
-        // Act
+        await Assert.ThrowsAsync<HttpRequestException>(
+            () => cliente.ObtenerDiff("workspace/repo", 123));
+    }
+
+    [Fact]
+    public async Task ObtenerDiff_ConCodigoNoReintentable_Lanza()
+    {
+        // Un 404 no se reintenta, pero sigue siendo un fallo: tampoco puede
+        // confundirse con un pull request sin cambios.
+        var handler = new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.NotFound));
+        var cliente = CrearCliente(handler);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(
+            () => cliente.ObtenerDiff("workspace/repo", 123));
+
+        Assert.Equal(HttpStatusCode.NotFound, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task ObtenerDiff_ConPrSinCambios_DevuelveVacioSinLanzar()
+    {
+        // Una respuesta 200 con cuerpo vacío sí es un diff vacío de verdad:
+        // el PR no toca nada. Eso no es un error y no debe lanzar.
+        var handler = new FakeHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(string.Empty, Encoding.UTF8, "text/plain"),
+        });
+        var cliente = CrearCliente(handler);
+
         var diff = await cliente.ObtenerDiff("workspace/repo", 123);
 
-        // Assert
         Assert.Equal(string.Empty, diff);
     }
 }

@@ -148,7 +148,7 @@ public class SupervivenciaReinicioTests
             CancelarEn = numero;
         }
 
-        public Task<IEnumerable<EventoPr>> ListarPrsAbiertos(string repositorio)
+        public Task<IEnumerable<EventoPr>> ListarPrsAbiertos(string repositorio, CancellationToken cancelacion = default)
         {
             if (Prs.TryGetValue(repositorio, out var prs))
             {
@@ -157,7 +157,7 @@ public class SupervivenciaReinicioTests
             return Task.FromResult(Enumerable.Empty<EventoPr>());
         }
 
-        public Task<string> ObtenerDiff(string repositorio, int numero)
+        public Task<string> ObtenerDiff(string repositorio, int numero, CancellationToken cancelacion = default)
         {
             LlamadasObtenerDiff.Add((repositorio, numero));
             if (numero == CancelarEn && !_diffDelObjetivoHecho)
@@ -168,12 +168,21 @@ public class SupervivenciaReinicioTests
             return Task.FromResult("diff");
         }
 
-        public Task PublicarComentario(string repositorio, int numero, Hallazgo hallazgo)
+        public Task PublicarComentario(string repositorio, int numero, Hallazgo hallazgo, CancellationToken cancelacion = default)
         {
             LlamadasPublicarComentario.Add((repositorio, numero, hallazgo));
             return Task.CompletedTask;
         }
-    }
+    
+        /// <summary>Comentarios de resumen publicados (A3).</summary>
+        public List<string> Resumenes { get; } = new();
+
+        public Task PublicarComentarioGeneral(string repositorio, int numero, string texto, CancellationToken cancelacion = default)
+        {
+            Resumenes.Add(texto);
+            return Task.CompletedTask;
+        }
+}
 
     /// <summary>
     /// Cliente falso de la segunda vuelta: no cancela nada y solo cuenta llamadas.
@@ -184,7 +193,7 @@ public class SupervivenciaReinicioTests
         public List<(string repositorio, int numero)> LlamadasObtenerDiff { get; } = new();
         public List<(string repositorio, int numero, Hallazgo hallazgo)> LlamadasPublicarComentario { get; } = new();
 
-        public Task<IEnumerable<EventoPr>> ListarPrsAbiertos(string repositorio)
+        public Task<IEnumerable<EventoPr>> ListarPrsAbiertos(string repositorio, CancellationToken cancelacion = default)
         {
             if (Prs.TryGetValue(repositorio, out var prs))
             {
@@ -193,25 +202,34 @@ public class SupervivenciaReinicioTests
             return Task.FromResult(Enumerable.Empty<EventoPr>());
         }
 
-        public Task<string> ObtenerDiff(string repositorio, int numero)
+        public Task<string> ObtenerDiff(string repositorio, int numero, CancellationToken cancelacion = default)
         {
             LlamadasObtenerDiff.Add((repositorio, numero));
             return Task.FromResult("diff");
         }
 
-        public Task PublicarComentario(string repositorio, int numero, Hallazgo hallazgo)
+        public Task PublicarComentario(string repositorio, int numero, Hallazgo hallazgo, CancellationToken cancelacion = default)
         {
             LlamadasPublicarComentario.Add((repositorio, numero, hallazgo));
             return Task.CompletedTask;
         }
-    }
+    
+        /// <summary>Comentarios de resumen publicados (A3).</summary>
+        public List<string> Resumenes { get; } = new();
+
+        public Task PublicarComentarioGeneral(string repositorio, int numero, string texto, CancellationToken cancelacion = default)
+        {
+            Resumenes.Add(texto);
+            return Task.CompletedTask;
+        }
+}
 
     /// <summary>
     /// Revisor minimo: devuelve siempre un hallazgo para que la publicacion ocurra.
     /// </summary>
     private sealed class RevisorFalsoPublicaHallazgo : IRevisor
     {
-        public Task<ResultadoRevision> RevisarAsync(string diff, CancellationToken token = default)
+        public Task<ResultadoRevision> RevisarAsync(string diff, ContextoRevision? contexto = null, CancellationToken token = default)
         {
             return Task.FromResult(ResultadoRevision.Ok(new List<Hallazgo>
             {

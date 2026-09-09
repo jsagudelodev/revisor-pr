@@ -123,11 +123,40 @@ public class EjecutorVueltaTests
         // El PR ahora aparece con un commit nuevo ("def")
         _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { prV2 };
         await sut.EjecutarAsync(CancellationToken.None);
-        var publicacionesTrasSegunda = _clienteBitbucket.LlamadasPublicarComentario.Count;
 
-        // Assert: la cuenta SÍ sube porque el commit es nuevo
+        // Assert: el commit nuevo SÍ se revisa (se pide su diff y se llama al modelo)...
         Assert.Equal(1, publicacionesTrasPrimera);
-        Assert.Equal(2, publicacionesTrasSegunda);
+        Assert.Equal(2, _clienteBitbucket.LlamadasObtenerDiff.Count);
+        Assert.Equal(2, _revisor.Llamadas);
+
+        // ...pero el hallazgo es el mismo que ya está comentado en el PR, así que NO se
+        // repite: al autor no le aparece dos veces el mismo aviso por haber empujado.
+        Assert.Single(_clienteBitbucket.LlamadasPublicarComentario);
+    }
+
+    [Fact]
+    public async Task EjecutarAsync_CommitNuevoConHallazgoDistinto_SiLoComenta()
+    {
+        // La otra cara de la moneda: si el commit nuevo trae un problema distinto,
+        // ese sí es información nueva y tiene que llegar al pull request.
+        var sut = CrearSut();
+        var prV1 = new EventoPr("test/repo", 1, "abc", "titulo", "rama");
+        var prV2 = new EventoPr("test/repo", 1, "def", "titulo", "rama");
+        _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { prV1 };
+
+        _decisor.FiltrarPrsParaRevisar(new PullRequest[0]);
+
+        await sut.EjecutarAsync(CancellationToken.None);
+
+        // El modelo señala ahora otra línea del mismo archivo.
+        _revisor.Siguiente = new Hallazgo("archivo.cs", 99, "error", "otro problema", "detalle");
+        _clienteBitbucket.Prs["test/repo"] = new List<EventoPr> { prV2 };
+        await sut.EjecutarAsync(CancellationToken.None);
+
+        Assert.Equal(2, _clienteBitbucket.LlamadasPublicarComentario.Count);
+        Assert.Equal(
+            new[] { "resumen", "otro problema" },
+            _clienteBitbucket.LlamadasPublicarComentario.Select(l => l.hallazgo.Resumen).ToArray());
     }
 
     [Fact]
@@ -206,7 +235,7 @@ public class EjecutorVueltaTests
         public List<(string repositorio, int numero)> LlamadasObtenerDiff { get; } = new();
         public List<(string repositorio, int numero, Hallazgo hallazgo)> LlamadasPublicarComentario { get; } = new();
 
-        public Task<IEnumerable<EventoPr>> ListarPrsAbiertos(string repositorio)
+        public Task<IEnumerable<EventoPr>> ListarPrsAbiertos(string repositorio, CancellationToken cancelacion = default)
         {
             if (Prs.TryGetValue(repositorio, out var prs))
             {
@@ -215,7 +244,7 @@ public class EjecutorVueltaTests
             return Task.FromResult(Enumerable.Empty<EventoPr>());
         }
 
-        public Task<string> ObtenerDiff(string repositorio, int numero)
+        public Task<string> ObtenerDiff(string repositorio, int numero, CancellationToken cancelacion = default)
         {
             LlamadasObtenerDiff.Add((repositorio, numero));
             if (numero == FallaEnPr)
@@ -225,23 +254,36 @@ public class EjecutorVueltaTests
             return Task.FromResult("diff");
         }
 
-        public Task PublicarComentario(string repositorio, int numero, Hallazgo hallazgo)
+        public Task PublicarComentario(string repositorio, int numero, Hallazgo hallazgo, CancellationToken cancelacion = default)
         {
             LlamadasPublicarComentario.Add((repositorio, numero, hallazgo));
             return Task.CompletedTask;
         }
-    }
+    
+        /// <summary>Comentarios de resumen publicados (A3).</summary>
+        public List<string> Resumenes { get; } = new();
+
+        public Task PublicarComentarioGeneral(string repositorio, int numero, string texto, CancellationToken cancelacion = default)
+        {
+            Resumenes.Add(texto);
+            return Task.CompletedTask;
+        }
+}
 
     private class RevisorFalso : IRevisor
     {
         public bool Llamado { get; private set; }
-        public Task<ResultadoRevision> RevisarAsync(string diff, CancellationToken token = default)
+        public int Llamadas { get; private set; }
+
+        /// <summary>Hallazgo que devolverá la próxima revisión.</summary>
+        public Hallazgo Siguiente { get; set; } =
+            new Hallazgo("archivo.cs", 1, "info", "resumen", "detalle");
+
+        public Task<ResultadoRevision> RevisarAsync(string diff, ContextoRevision? contexto = null, CancellationToken token = default)
         {
             Llamado = true;
-            return Task.FromResult(ResultadoRevision.Ok(new List<Hallazgo>
-            {
-                new Hallazgo("archivo.cs", 1, "info", "resumen", "detalle")
-            }));
+            Llamadas++;
+            return Task.FromResult(ResultadoRevision.Ok(new List<Hallazgo> { Siguiente }));
         }
     }
 
@@ -307,5 +349,14 @@ public class EjecutorVueltaTests
         {
             return Fallos.ToList();
         }
-    }
+    
+        // --- Idempotencia por comentario (A2) ---
+        private readonly HashSet<(string, int, string)> _comentados = new();
+
+        public bool ComentarioPublicado(string slugRepo, int idPr, string huella)
+            => _comentados.Contains((slugRepo, idPr, huella));
+
+        public void MarcarComentarioPublicado(string slugRepo, int idPr, string hashCommit, string huella, string comentario)
+            => _comentados.Add((slugRepo, idPr, huella));
+}
 }

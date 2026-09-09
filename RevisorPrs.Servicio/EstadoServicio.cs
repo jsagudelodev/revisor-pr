@@ -23,7 +23,10 @@ public record InstanteEstado(
     int OmitidosUltimaVuelta,
     int FallidosUltimaVuelta,
     int FallidosAcumulados,
-    IReadOnlyList<ErrorRegistrado> UltimosErrores);
+    IReadOnlyList<ErrorRegistrado> UltimosErrores,
+    ConsumoTokens ConsumoAcumulado = default,
+    ConsumoTokens ConsumoUltimaRevision = default,
+    int RevisionesConCoste = 0);
 
 /// <summary>
 /// Estado observable del servicio de sondeo: qué hizo en la última vuelta, cuántos
@@ -53,6 +56,9 @@ public sealed class EstadoServicio
     private int _omitidosUltimaVuelta;
     private int _fallidosUltimaVuelta;
     private int _fallidosAcumulados;
+    private ConsumoTokens _consumoAcumulado;
+    private ConsumoTokens _consumoUltimaRevision;
+    private int _revisionesConCoste;
 
     public EstadoServicio(Func<DateTimeOffset>? ahora = null)
     {
@@ -90,6 +96,30 @@ public sealed class EstadoServicio
         lock (_candado)
         {
             _proximaVueltaUtc = _ahora() + intervalo;
+        }
+    }
+
+    /// <summary>
+    /// Anota lo que ha costado una revision.
+    /// </summary>
+    /// <remarks>
+    /// Se acumula tambien el coste de las revisiones que fallaron: una llamada al modelo
+    /// que no sirvio se paga igual, y ocultarla falsearia la cifra justo en el caso en el
+    /// que mas interesa mirarla.
+    /// </remarks>
+    public void RegistrarConsumo(ConsumoTokens consumo)
+    {
+        if (consumo.Total <= 0)
+        {
+            // El proveedor no informo del uso: no hay nada que sumar.
+            return;
+        }
+
+        lock (_candado)
+        {
+            _consumoAcumulado += consumo;
+            _consumoUltimaRevision = consumo;
+            _revisionesConCoste++;
         }
     }
 
@@ -132,7 +162,10 @@ public sealed class EstadoServicio
                 OmitidosUltimaVuelta: _omitidosUltimaVuelta,
                 FallidosUltimaVuelta: _fallidosUltimaVuelta,
                 FallidosAcumulados: _fallidosAcumulados,
-                UltimosErrores: _errores.ToArray());
+                UltimosErrores: _errores.ToArray(),
+                ConsumoAcumulado: _consumoAcumulado,
+                ConsumoUltimaRevision: _consumoUltimaRevision,
+                RevisionesConCoste: _revisionesConCoste);
         }
     }
 }

@@ -156,12 +156,14 @@ public class ReintentosTests
 
         var cliente = CrearCliente(handler);
 
-        // Act
-        var diff = await cliente.ObtenerDiff("workspace/repo", 42);
+        // Act: un 404 no es éxito, así que el fallo se propaga en lugar de devolver
+        // un diff vacío que el ejecutor confundiría con un PR sin cambios.
+        var error = await Assert.ThrowsAsync<HttpRequestException>(
+            () => cliente.ObtenerDiff("workspace/repo", 42));
 
-        // Assert: solo una llamada, y devuelve vacío porque 404 no es éxito.
-        Assert.Empty(diff);
+        // Assert: lo que mide este test es que NO se reintenta un 4xx.
         Assert.Equal(1, handler.Llamadas);
+        Assert.Equal(HttpStatusCode.NotFound, error.StatusCode);
     }
 
     /// <summary>

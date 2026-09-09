@@ -46,6 +46,7 @@ public sealed class ServidorEstado : BackgroundService
     private readonly ConfiguracionEstado _configuracion;
     private readonly EstadoServicio _estado;
     private readonly SaneadorSecretos _saneador;
+    private readonly ConfiguracionLlm? _configuracionLlm;
 
     private TcpListener? _escucha;
 
@@ -53,12 +54,14 @@ public sealed class ServidorEstado : BackgroundService
         ILogger<ServidorEstado> logger,
         ConfiguracionEstado configuracion,
         EstadoServicio estado,
-        SaneadorSecretos? saneador = null)
+        SaneadorSecretos? saneador = null,
+        ConfiguracionLlm? configuracionLlm = null)
     {
         _logger = logger;
         _configuracion = configuracion ?? throw new ArgumentNullException(nameof(configuracion));
         _estado = estado ?? throw new ArgumentNullException(nameof(estado));
         _saneador = saneador ?? SaneadorSecretos.Ninguno;
+        _configuracionLlm = configuracionLlm;
     }
 
     /// <summary>
@@ -312,11 +315,44 @@ public sealed class ServidorEstado : BackgroundService
                 revisadosAcumulados = instante.RevisadosAcumulados,
                 fallidosAcumulados = instante.FallidosAcumulados,
             },
+            consumo = ComponerConsumo(instante),
             ultimosErrores = errores,
         };
 
         string json = JsonSerializer.Serialize(respuesta);
         return _saneador.Sanear(json);
+    }
+
+    /// <summary>
+    /// Bloque de coste. Los tokens van siempre; la estimacion en dinero solo si el
+    /// equipo ha configurado sus tarifas, porque los precios los pone el proveedor y no
+    /// tendria sentido inventarlos aqui.
+    /// </summary>
+    private object ComponerConsumo(InstanteEstado instante)
+    {
+        decimal entrada = _configuracionLlm?.CostePorMillonEntrada ?? 0m;
+        decimal salida = _configuracionLlm?.CostePorMillonSalida ?? 0m;
+        bool hayTarifa = entrada > 0m || salida > 0m;
+
+        return new
+        {
+            revisionesMedidas = instante.RevisionesConCoste,
+            tokensAcumulados = new
+            {
+                entrada = instante.ConsumoAcumulado.Entrada,
+                salida = instante.ConsumoAcumulado.Salida,
+                total = instante.ConsumoAcumulado.Total,
+            },
+            tokensUltimaRevision = new
+            {
+                entrada = instante.ConsumoUltimaRevision.Entrada,
+                salida = instante.ConsumoUltimaRevision.Salida,
+                total = instante.ConsumoUltimaRevision.Total,
+            },
+            costeEstimadoAcumulado = hayTarifa
+                ? Math.Round(instante.ConsumoAcumulado.Estimar(entrada, salida), 4)
+                : (decimal?)null,
+        };
     }
 
     private static bool EsLoopback(IPAddress ip)

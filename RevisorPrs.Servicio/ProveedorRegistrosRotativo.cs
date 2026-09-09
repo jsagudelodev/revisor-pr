@@ -76,12 +76,24 @@ public sealed class ProveedorRegistrosRotativo : ILoggerProvider
     /// <inheritdoc />
     public void Dispose()
     {
-        // Nada que liberar: el fichero lo mantiene abierto el sistema hasta el fin del proceso.
+        // Nada que liberar: el fichero se cierra tras cada linea.
     }
 
     /// <summary>
     /// Escribe una linea ya saneada en el fichero, rotando antes si toca.
     /// </summary>
+    /// <summary>
+    /// Escribe una linea ya saneada en el fichero, rotando antes si toca.
+    /// </summary>
+    /// <remarks>
+    /// El fichero se abre y se cierra en cada linea. Se probo a mantener un StreamWriter
+    /// abierto para ahorrar esas aperturas, y se descarto: en Windows, un fichero que
+    /// alguien tiene abierto para escritura no lo puede leer una herramienta que abra con
+    /// FileShare.Read, que es lo que hacen el Bloc de notas, "type" y File.ReadAllText.
+    /// Es decir, el operador no podria leer el log mientras el servicio corre, que es
+    /// justo cuando lo necesita. Al volumen que escribe esto —unas lineas por vuelta— la
+    /// apertura por linea no cuesta nada medible.
+    /// </remarks>
     internal void Escribir(string linea)
     {
         lock (_candadoEscritura)
@@ -116,7 +128,17 @@ public sealed class ProveedorRegistrosRotativo : ILoggerProvider
 
         public IDisposable BeginScope<TState>(TState state) where TState : notnull => AmbitoNulo.Instancia;
 
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
+        /// <summary>
+        /// Deja decidir al sistema de log.
+        /// </summary>
+        /// <remarks>
+        /// Antes habia aqui un umbral fijo en Information, que ignoraba la seccion
+        /// Logging:LogLevel del appsettings: el operador no podia bajar el nivel para
+        /// diagnosticar ni subirlo para callar las trazas de HttpClient. El filtrado por
+        /// configuracion lo aplica el propio ILoggerFactory antes de llegar aqui, asi que
+        /// lo unico que hay que hacer es no interponer un suelo propio.
+        /// </remarks>
+        public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {

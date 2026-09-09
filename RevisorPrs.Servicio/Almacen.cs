@@ -13,16 +13,17 @@ namespace RevisorPrs.Servicio
         private SqliteConnection? _connection;
 
         // Definicion de migraciones numeradas
-        private readonly List<(int version, Action migracion)> migraciones;
+        private readonly List<(int version, Action<SqliteTransaction> migracion)> migraciones;
 
         public Almacen(string rutaBaseDatos)
         {
-            migraciones = new List<(int, Action)>()
+            migraciones = new List<(int, Action<SqliteTransaction>)>()
             {
                 (1, Migracion1),
                 (2, Migracion2),
                 (3, Migracion3),
                 (4, Migracion4),
+                (5, Migracion5),
             };
 
             if (string.IsNullOrWhiteSpace(rutaBaseDatos))
@@ -65,17 +66,19 @@ namespace RevisorPrs.Servicio
             return Convert.ToInt32(result);
         }
 
-        private void InsertarVersion(int version)
+        private void InsertarVersion(int version, SqliteTransaction transaccion)
         {
             using var cmd = _connection!.CreateCommand();
+            cmd.Transaction = transaccion;
             cmd.CommandText = "INSERT INTO EsquemaVersion (Version) VALUES (@version)";
             cmd.Parameters.AddWithValue("@version", version);
             cmd.ExecuteNonQuery();
         }
 
-        private void Migracion1()
+        private void Migracion1(SqliteTransaction transaccion)
         {
             using var cmd = _connection!.CreateCommand();
+            cmd.Transaction = transaccion;
             cmd.CommandText = @"
                 CREATE TABLE IF NOT EXISTS Revisiones (
                     Repositorio TEXT NOT NULL,
@@ -87,9 +90,10 @@ namespace RevisorPrs.Servicio
             cmd.ExecuteNonQuery();
         }
 
-        private void Migracion2()
+        private void Migracion2(SqliteTransaction transaccion)
         {
             using var cmd = _connection!.CreateCommand();
+            cmd.Transaction = transaccion;
             cmd.CommandText = @"
                 CREATE TABLE IF NOT EXISTS HallazgosPublicados (
                     Id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,9 +106,10 @@ namespace RevisorPrs.Servicio
             cmd.ExecuteNonQuery();
         }
 
-        private void Migracion3()
+        private void Migracion3(SqliteTransaction transaccion)
         {
             using var cmd = _connection!.CreateCommand();
+            cmd.Transaction = transaccion;
             cmd.CommandText = @"
                 CREATE INDEX IF NOT EXISTS IX_HallazgosPublicados_Aislamiento
                 ON HallazgosPublicados (Repositorio, PullRequest, ""Commit"");
@@ -112,9 +117,10 @@ namespace RevisorPrs.Servicio
             cmd.ExecuteNonQuery();
         }
 
-        private void Migracion4()
+        private void Migracion4(SqliteTransaction transaccion)
         {
             using var cmd = _connection!.CreateCommand();
+            cmd.Transaction = transaccion;
             cmd.CommandText = @"
                 CREATE TABLE IF NOT EXISTS IntentosFallidos (
                     Repositorio TEXT NOT NULL,
@@ -129,16 +135,48 @@ namespace RevisorPrs.Servicio
             cmd.ExecuteNonQuery();
         }
 
+        private void Migracion5(SqliteTransaction transaccion)
+        {
+            // La tabla existia desde la migracion 2 pero nadie la escribia. Para poder
+            // usarla como registro de idempotencia le anadimos la huella del hallazgo y
+            // un indice UNICO que hace imposible guardar dos veces el mismo comentario
+            // en el mismo pull request, aunque dos vueltas se solapen.
+            using (var cmd = _connection!.CreateCommand())
+            {
+                cmd.Transaction = transaccion;
+                cmd.CommandText = @"ALTER TABLE HallazgosPublicados ADD COLUMN Huella TEXT";
+                cmd.ExecuteNonQuery();
+            }
+
+            using (var cmd = _connection!.CreateCommand())
+            {
+                cmd.Transaction = transaccion;
+                // Las filas anteriores tienen Huella nula y en SQLite los nulos no chocan
+                // entre si en un indice unico, asi que no hace falta rellenarlas.
+                cmd.CommandText = @"
+                    CREATE UNIQUE INDEX IF NOT EXISTS IX_HallazgosPublicados_Huella
+                    ON HallazgosPublicados (Repositorio, PullRequest, Huella);
+                ";
+                cmd.ExecuteNonQuery();
+            }
+        }
+
         public void AplicarMigraciones()
         {
             int versionActual = ObtenerVersionActual();
             foreach (var (version, migracion) in migraciones)
             {
-                if (version > versionActual)
+                if (version <= versionActual)
                 {
-                    migracion();
-                    InsertarVersion(version);
+                    continue;
                 }
+
+                // El cambio de esquema y el registro de su version son un solo hecho:
+                // separarlos deja la base a medias si el proceso cae entre ambos.
+                using var transaccion = _connection!.BeginTransaction();
+                migracion(transaccion);
+                InsertarVersion(version, transaccion);
+                transaccion.Commit();
             }
         }
 
@@ -154,14 +192,44 @@ namespace RevisorPrs.Servicio
             return result != null;
         }
 
+        /// <summary>
+        /// Da un pull request por revisado y, con ello, cancela el backoff que
+        /// arrastrara de intentos anteriores.
+        /// </summary>
+        /// <remarks>
+        /// Las dos escrituras van en una transacción porque describen un solo hecho:
+        /// este PR ya está resuelto. Si solo se insertara la revisión, la fila de
+        /// IntentosFallidos quedaría para siempre: el ejecutor la reinyectaría en cada
+        /// vuelta (la salva la guarda de Revisado, pero se cuenta como omitido) y el
+        /// contador de intentos nunca volvería a cero, así que un fallo posterior
+        /// heredaría el backoff acumulado de hace semanas.
+        /// </remarks>
         public void MarcarRevisado(string repositorio, int pullRequest, string commit)
         {
-            using var cmd = _connection!.CreateCommand();
-            cmd.CommandText = @"INSERT OR IGNORE INTO Revisiones (Repositorio, PullRequest, ""Commit"") VALUES (@repositorio, @pullRequest, @commit)";
-            cmd.Parameters.AddWithValue("@repositorio", repositorio);
-            cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
-            cmd.Parameters.AddWithValue("@commit", commit);
-            cmd.ExecuteNonQuery();
+            using var transaccion = _connection!.BeginTransaction();
+
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.Transaction = transaccion;
+                cmd.CommandText = @"INSERT OR IGNORE INTO Revisiones (Repositorio, PullRequest, ""Commit"") VALUES (@repositorio, @pullRequest, @commit)";
+                cmd.Parameters.AddWithValue("@repositorio", repositorio);
+                cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
+                cmd.Parameters.AddWithValue("@commit", commit);
+                cmd.ExecuteNonQuery();
+            }
+
+            // El borrado va por (repositorio, pull request) sin mirar el commit: si el PR
+            // falló en un commit y ha salido adelante en otro, el problema está resuelto.
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.Transaction = transaccion;
+                cmd.CommandText = @"DELETE FROM IntentosFallidos WHERE Repositorio = @repositorio AND PullRequest = @pullRequest";
+                cmd.Parameters.AddWithValue("@repositorio", repositorio);
+                cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
+                cmd.ExecuteNonQuery();
+            }
+
+            transaccion.Commit();
         }
 
         public IEnumerable<(string Repositorio, int Numero, string Commit)> ListarRevisiones()
@@ -185,6 +253,46 @@ namespace RevisorPrs.Servicio
             cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
             cmd.Parameters.AddWithValue("@commit", commit);
             cmd.Parameters.AddWithValue("@comentario", comentario);
+            cmd.ExecuteNonQuery();
+        }
+
+        /// <summary>
+        /// Indica si un hallazgo con esta huella ya se comentó en el pull request.
+        /// </summary>
+        /// <remarks>
+        /// La consulta ignora el commit a propósito: un hallazgo que sigue vigente tras
+        /// un empuje nuevo no debe volver a comentarse. El commit se guarda solo para
+        /// saber en cuál se detectó por primera vez.
+        /// </remarks>
+        public bool ComentarioPublicado(string repositorio, int pullRequest, string huella)
+        {
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = @"SELECT 1 FROM HallazgosPublicados WHERE Repositorio = @repositorio AND PullRequest = @pullRequest AND Huella = @huella LIMIT 1";
+            cmd.Parameters.AddWithValue("@repositorio", repositorio);
+            cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
+            cmd.Parameters.AddWithValue("@huella", huella);
+            return cmd.ExecuteScalar() != null;
+        }
+
+        /// <summary>
+        /// Deja constancia de que un comentario ya está publicado en el pull request.
+        /// Si la huella ya estaba registrada no hace nada, así que llamarlo dos veces
+        /// es inofensivo.
+        /// </summary>
+        public void MarcarComentarioPublicado(
+            string repositorio,
+            int pullRequest,
+            string commit,
+            string huella,
+            string comentario)
+        {
+            using var cmd = _connection!.CreateCommand();
+            cmd.CommandText = @"INSERT OR IGNORE INTO HallazgosPublicados (Repositorio, PullRequest, ""Commit"", Comentario, Huella) VALUES (@repositorio, @pullRequest, @commit, @comentario, @huella)";
+            cmd.Parameters.AddWithValue("@repositorio", repositorio);
+            cmd.Parameters.AddWithValue("@pullRequest", pullRequest);
+            cmd.Parameters.AddWithValue("@commit", commit);
+            cmd.Parameters.AddWithValue("@comentario", comentario);
+            cmd.Parameters.AddWithValue("@huella", huella);
             cmd.ExecuteNonQuery();
         }
 

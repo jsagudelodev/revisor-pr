@@ -85,6 +85,15 @@ public class TraductorEventoPr
                 titulo = tituloProp.GetString();
             }
 
+            // Descripcion del autor. NO es esencial: muchos equipos la dejan vacia,
+            // asi que su ausencia no descarta el pull request.
+            string? descripcion = null;
+            if (json.TryGetProperty("description", out var descripcionProp)
+                && descripcionProp.ValueKind == JsonValueKind.String)
+            {
+                descripcion = descripcionProp.GetString();
+            }
+
             // Rama de destino
             if (json.TryGetProperty("destination", out var destination) &&
                 destination.TryGetProperty("branch", out var branchObj) &&
@@ -105,7 +114,7 @@ public class TraductorEventoPr
                 return null;
             }
 
-            return new EventoPr(repositorio, numero, commit, titulo, rama);
+            return new EventoPr(repositorio, numero, commit, titulo, rama, descripcion);
         }
         catch (Exception ex)
         {

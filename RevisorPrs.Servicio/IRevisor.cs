@@ -20,5 +20,12 @@ public interface IRevisor
     /// <returns>
     /// Un <see cref="ResultadoRevision"/> con los hallazgos, o con el motivo del fallo.
     /// </returns>
-    Task<ResultadoRevision> RevisarAsync(string diff, CancellationToken token = default);
+    /// <param name="contexto">
+    /// Intencion declarada del pull request. Opcional: sin ella el modelo solo ve el
+    /// diff y no puede distinguir un cambio deliberado de un descuido.
+    /// </param>
+    Task<ResultadoRevision> RevisarAsync(
+        string diff,
+        ContextoRevision? contexto = null,
+        CancellationToken token = default);
 }

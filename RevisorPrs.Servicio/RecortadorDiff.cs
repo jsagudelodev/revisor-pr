@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using Microsoft.Extensions.Logging;
 
 namespace RevisorPrs.Servicio;
 
@@ -38,12 +39,6 @@ public class RecortadorDiff
                 "El tope de bytes del diff debe ser positivo.");
         }
 
-        var bytes = Encoding.UTF8.GetByteCount(diff);
-        if (bytes <= topeBytes)
-        {
-            return diff;
-        }
-
         // Partimos el diff en secciones por archivo.
         // La primera sección (si existe) puede no empezar por "diff --git": suele ser
         // una cabecera global (p. ej. "Subproject commit ..."); la respetamos como preludio.
@@ -56,6 +51,48 @@ public class RecortadorDiff
         var primerArchivo = secciones[0].EmpiezaConMarca;
         var preludio = primerArchivo ? string.Empty : secciones[0].Contenido;
         var archivos = primerArchivo ? secciones : secciones.GetRange(1, secciones.Count - 1);
+
+        // La exclusión va ANTES del tope de bytes: si un fichero de bloqueo de 2 MB
+        // consumiera el presupuesto, el código que de verdad importa se quedaría fuera.
+        var patrones = _configuracion.ResolverRutasExcluidas();
+        var excluidos = new List<string>();
+        var revisables = new List<SeccionDif>(archivos.Count);
+
+        foreach (var seccion in archivos)
+        {
+            var nombreArchivo = ExtraerNombreArchivo(seccion.Contenido);
+            if (ExclusionRutas.EstaExcluida(nombreArchivo, patrones))
+            {
+                excluidos.Add(nombreArchivo);
+            }
+            else
+            {
+                revisables.Add(seccion);
+            }
+        }
+
+        if (excluidos.Count > 0)
+        {
+            _logger?.LogInformation(
+                "Se excluyeron {Cantidad} archivo(s) de la revisión por coincidir con las rutas excluidas: {Archivos}",
+                excluidos.Count,
+                string.Join(", ", excluidos));
+        }
+
+        archivos = revisables;
+
+        // Si no quedó nada revisable, devolvemos un diff vacío: el ejecutor lo tratará
+        // como un pull request sin cambios que revisar y no gastará una llamada al modelo.
+        if (archivos.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        // Sin exclusiones y cabiendo en el tope, el diff se devuelve intacto.
+        if (excluidos.Count == 0 && Encoding.UTF8.GetByteCount(diff) <= topeBytes)
+        {
+            return diff;
+        }
 
         var preludioBytes = Encoding.UTF8.GetByteCount(preludio);
 
@@ -98,11 +135,18 @@ public class RecortadorDiff
     }
 
     private readonly ConfiguracionBitbucket _configuracion;
+    private readonly ILogger<RecortadorDiff>? _logger;
 
-    public RecortadorDiff(ConfiguracionBitbucket configuracion)
+    /// <param name="logger">
+    /// Opcional. Los archivos excluidos se registran en el log en vez de anunciarse
+    /// dentro del diff: son política nuestra, no información que el modelo necesite,
+    /// y meterlos en el prompt solo gastaría tokens.
+    /// </param>
+    public RecortadorDiff(ConfiguracionBitbucket configuracion, ILogger<RecortadorDiff>? logger = null)
     {
         _configuracion = configuracion
             ?? throw new ArgumentNullException(nameof(configuracion));
+        _logger = logger;
     }
 
     private static List<SeccionDif> PartirPorArchivo(string diff)

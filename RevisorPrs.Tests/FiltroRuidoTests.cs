@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Extensions.Options;
 using RevisorPrs.Servicio;
 
@@ -12,11 +13,20 @@ namespace RevisorPrs.Tests;
 public class FiltroRuidoTests
 {
     /// <summary>
-    /// Diff de ejemplo con dos hunks: uno en el archivo viejo a partir de la línea 10
-    /// y otro en el archivo nuevo a partir de la línea 42. Esto da cobertura tanto a
-    /// líneas "antiguas" como "nuevas" para la comprobación de presencia en el diff.
+    /// Diff de ejemplo con tres archivos, cada uno con dos hunks: uno en el archivo
+    /// viejo a partir de la línea 10 y otro en el nuevo a partir de la 42. Da cobertura
+    /// tanto a líneas "antiguas" como "nuevas".
+    ///
+    /// Lleva cabeceras <c>diff --git</c> reales porque el filtro comprueba la línea
+    /// contra los hunks DE SU ARCHIVO: sin ellas no habría archivo al que atribuirlos y
+    /// estos tests no ejercitarían la regla que de verdad importa.
     /// </summary>
-    private const string DiffEjemplo =
+    private static readonly string DiffEjemplo =
+        SeccionDeEjemplo("src/A.cs") +
+        SeccionDeEjemplo("src/B.cs") +
+        SeccionDeEjemplo("src/C.cs");
+
+    private const string HunksDeEjemplo =
         "@@ -10,3 +10,3 @@\n" +
         "-linea vieja 10\n" +
         "+linea nueva 10\n" +
@@ -25,6 +35,12 @@ public class FiltroRuidoTests
         "+linea nueva 42\n" +
         "+linea nueva 43\n" +
         "+linea nueva 44\n";
+
+    private static string SeccionDeEjemplo(string ruta) =>
+        "diff --git a/" + ruta + " b/" + ruta + "\n" +
+        "--- a/" + ruta + "\n" +
+        "+++ b/" + ruta + "\n" +
+        HunksDeEjemplo;
 
     [Fact]
     public void Filtrar_ConSeveridadPorDebajoDelUmbral_LoDescarta()
@@ -93,5 +109,54 @@ public class FiltroRuidoTests
         Assert.Equal("Comentario general", resultado[0].Resumen);
         // No debe haberse emitido ningún descarte.
         Assert.DoesNotContain(logger.Mensajes, m => m.Contains("Hallazgo descartado"));
+    }
+
+    [Fact]
+    public void Filtrar_ConSeveridadesDelModelo_AplicaElUmbralConfigurado()
+    {
+        // El umbral se configura en español ("media") pero el modelo responde con el
+        // vocabulario que le pide PromptRevision ("info"/"warning"/"error"). Si el
+        // filtro no equiparara ambos, todo hallazgo real pesaría menos que el umbral
+        // y se descartarían TODOS.
+        var config = Options.Create(new ConfiguracionLlm { SeveridadMinima = "media" });
+        var logger = new RegistradorFalso<FiltroRuido>();
+        var filtro = new FiltroRuido(config, logger);
+
+        var hallazgos = new List<Hallazgo>
+        {
+            new("src/A.cs", Linea: 42, Severidad: "error", Resumen: "Grave", Detalle: "detalle"),
+            new("src/B.cs", Linea: 42, Severidad: "warning", Resumen: "Aviso", Detalle: "detalle"),
+            new("src/C.cs", Linea: 42, Severidad: "info", Resumen: "Ruido", Detalle: "detalle"),
+        };
+
+        var resultado = filtro.Filtrar(hallazgos, DiffEjemplo);
+
+        // "error" y "warning" llegan al umbral "media"; "info" se queda por debajo.
+        Assert.Equal(2, resultado.Count);
+        Assert.Equal(new[] { "Grave", "Aviso" }, resultado.Select(h => h.Resumen).ToArray());
+        Assert.Contains(logger.Mensajes, m => m.Contains("severidad por debajo del umbral"));
+    }
+
+    [Fact]
+    public void Filtrar_ConLineaInteriorDelHunk_LaConserva()
+    {
+        // La cabecera "@@ -40,2 +42,3 @@" declara un tramo de tres líneas (42, 43 y 44),
+        // no solo la primera. Un hallazgo en la 43 está dentro del diff.
+        var config = Options.Create(new ConfiguracionLlm { SeveridadMinima = "baja" });
+        var logger = new RegistradorFalso<FiltroRuido>();
+        var filtro = new FiltroRuido(config, logger);
+
+        var hallazgos = new List<Hallazgo>
+        {
+            new("src/A.cs", Linea: 43, Severidad: "alta", Resumen: "Interior del hunk", Detalle: "detalle"),
+            new("src/B.cs", Linea: 44, Severidad: "alta", Resumen: "Final del hunk", Detalle: "detalle"),
+            // 45 queda justo fuera del tramo 42..44.
+            new("src/C.cs", Linea: 45, Severidad: "alta", Resumen: "Pasado el hunk", Detalle: "detalle"),
+        };
+
+        var resultado = filtro.Filtrar(hallazgos, DiffEjemplo);
+
+        Assert.Equal(new[] { "Interior del hunk", "Final del hunk" }, resultado.Select(h => h.Resumen).ToArray());
+        Assert.Contains(logger.Mensajes, m => m.Contains("línea fuera del diff"));
     }
 }

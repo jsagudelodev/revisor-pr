@@ -6,18 +6,29 @@ public class Worker : BackgroundService
     private readonly ConfiguracionSondeo _configuracion;
     private readonly IEjecutorVuelta _ejecutor;
     private readonly IReloj _reloj;
+    private readonly EstadoServicio? _estado;
+    private readonly ColaDeRevisiones? _cola;
     private readonly SemaphoreSlim _candadoVuelta = new SemaphoreSlim(1);
 
+    /// <param name="estado">
+    /// Estado observable que publica el endpoint /estado. Es el sondeo quien sabe
+    /// cuándo toca la próxima vuelta, así que es aquí donde se anuncia. Opcional
+    /// para los tests que solo ejercitan el ritmo del bucle.
+    /// </param>
     public Worker(
         ILogger<Worker> logger,
         ConfiguracionSondeo configuracion,
         IEjecutorVuelta ejecutor,
-        IReloj reloj)
+        IReloj reloj,
+        EstadoServicio? estado = null,
+        ColaDeRevisiones? cola = null)
     {
         _logger = logger;
         _configuracion = configuracion;
         _ejecutor = ejecutor;
         _reloj = reloj;
+        _estado = estado;
+        _cola = cola;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -37,7 +48,16 @@ public class Worker : BackgroundService
         while (!stoppingToken.IsCancellationRequested)
         {
             await EjecutarUnaVueltaAsync(stoppingToken);
+
+            // Se anuncia DESPUÉS de la vuelta y antes de dormir: así el instante
+            // publicado se cuenta desde que el sondeo se queda quieto de verdad,
+            // no desde que empezó a trabajar.
+            _estado?.AnunciarProximoSondeo(intervalo);
+
             await _reloj.EsperarAsync(intervalo, stoppingToken);
+
+            // Antes de la vuelta siguiente se atiende lo que haya avisado el webhook.
+            await AtenderAvisosAsync(stoppingToken);
         }
     }
 
@@ -61,6 +81,54 @@ public class Worker : BackgroundService
         finally
         {
             _candadoVuelta.Release();
+        }
+    }
+
+    /// <summary>
+    /// Revisa los pull requests que el webhook haya encolado.
+    /// </summary>
+    /// <remarks>
+    /// Se atienden desde el MISMO hilo que el sondeo y bajo el mismo candado, a
+    /// proposito: el almacen es una unica conexion SQLite y el decisor guarda estado en
+    /// memoria. Revisar en paralelo desde el hilo que atiende el webhook seria pedir una
+    /// carrera de datos.
+    ///
+    /// Lo que gana el equipo es la latencia: la revision arranca al atender el aviso, en
+    /// vez de esperar a que venza el intervalo de sondeo.
+    /// </remarks>
+    public async Task AtenderAvisosAsync(CancellationToken cancelacion)
+    {
+        if (_cola is null)
+        {
+            return;
+        }
+
+        while (!cancelacion.IsCancellationRequested
+            && _cola.IntentarSacar(out PullRequest? pr)
+            && pr is not null)
+        {
+            await _candadoVuelta.WaitAsync(cancelacion);
+            try
+            {
+                await _ejecutor.RevisarPrAsync(pr, cancelacion);
+            }
+            catch (OperationCanceledException) when (cancelacion.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Un aviso que revienta no puede tumbar el sondeo.
+                _logger.LogError(
+                    ex,
+                    "Error revisando {Repositorio}#{Numero} desde un aviso de webhook.",
+                    pr.Repositorio,
+                    pr.Numero);
+            }
+            finally
+            {
+                _candadoVuelta.Release();
+            }
         }
     }
 

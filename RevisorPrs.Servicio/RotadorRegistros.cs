@@ -98,15 +98,7 @@ public sealed class RotadorRegistros
     {
         lock (_candado)
         {
-            if (_tamanoMaximoBytes <= 0)
-            {
-                return false;
-            }
-            if (!File.Exists(_rutaActiva))
-            {
-                return false;
-            }
-            if (TamanoActual() < _tamanoMaximoBytes)
+            if (!TocaRotarSinCandado())
             {
                 return false;
             }
@@ -115,6 +107,11 @@ public sealed class RotadorRegistros
             return true;
         }
     }
+
+    private bool TocaRotarSinCandado()
+        => _tamanoMaximoBytes > 0
+            && File.Exists(_rutaActiva)
+            && TamanoActual() >= _tamanoMaximoBytes;
 
     /// <summary>
     /// Rota los ficheros a disco, desplazando <c>ruta.N-1</c> -> borrado,

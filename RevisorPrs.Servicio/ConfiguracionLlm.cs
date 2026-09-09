@@ -31,6 +31,36 @@ public class ConfiguracionLlm
     public string SeveridadMinima { get; set; } = string.Empty;
 
     /// <summary>
+    /// Severidad a partir de la cual un hallazgo se comenta ANCLADO a su línea del diff.
+    /// Los que quedan por debajo se agrupan en un único comentario de resumen.
+    ///
+    /// Por defecto "error": solo lo grave interrumpe con una notificación propia, y el
+    /// resto llega junto. Es lo que evita que un pull request con doce hallazgos genere
+    /// doce avisos a cada persona suscrita.
+    ///
+    /// Admite los dos vocabularios ("error"/"warning"/"info" y "alta"/"media"/"baja").
+    /// Con "baja" se ancla todo, que es el comportamiento anterior.
+    /// </summary>
+    public string SeveridadAnclada { get; set; } = "error";
+
+    /// <summary>
+    /// Tarifa por millon de tokens de ENTRADA, para estimar el gasto en /estado.
+    /// Cero (por defecto) significa que no se estima nada y solo se informan tokens.
+    /// </summary>
+    /// <remarks>
+    /// La tarifa la pone el equipo porque los precios cambian y varian por modelo:
+    /// codificarlos en el servicio seria garantizar que envejecen mal. La moneda es la
+    /// que use tu proveedor; el servicio solo multiplica.
+    /// </remarks>
+    public decimal CostePorMillonEntrada { get; set; }
+
+    /// <summary>
+    /// Tarifa por millon de tokens de SALIDA. Suele ser bastante mas cara que la de
+    /// entrada, de ahi que se configuren por separado.
+    /// </summary>
+    public decimal CostePorMillonSalida { get; set; }
+
+    /// <summary>
     /// Tope de tokens para la RESPUESTA del modelo (parámetro max_tokens del proveedor).
     /// Un valor demasiado bajo hace que la respuesta llegue truncada a mitad de un JSON
     /// y se pierdan hallazgos (RV.10b). Por defecto se deja un valor generoso para que

@@ -91,8 +91,16 @@ public class DecisorRevisarTests
 
         var prsParaRevisar = decisor.FiltrarPrsParaRevisar(prsActualizados).ToList();
 
-        Assert.Single(prsParaRevisar);
-        Assert.Equal(1, prsParaRevisar[0].Numero);
-        Assert.Equal("nuevoCommit", prsParaRevisar[0].Commit);
+        // Hasta D1 este test exigía que SOLO se devolviera el PR con commit nuevo, y que
+        // el PR 2 —completamente nuevo— esperase a la vuelta siguiente. Se cambió a
+        // propósito: ese aplazamiento no evitaba ningún problema (las guardas de
+        // idempotencia del almacén ya impiden revisar dos veces) y hacía esperar un
+        // intervalo entero sin motivo.
+        Assert.Equal(2, prsParaRevisar.Count);
+
+        var actualizado = Assert.Single(prsParaRevisar.Where(p => p.Numero == 1));
+        Assert.Equal("nuevoCommit", actualizado.Commit);
+
+        Assert.Contains(prsParaRevisar, p => p.Numero == 2);
     }
 }

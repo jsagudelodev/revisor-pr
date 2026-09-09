@@ -1,3 +1,6 @@
+using System.Threading.Tasks;
+using System.Threading;
+using System.Collections.Generic;
 using Microsoft.Extensions.Logging.Abstractions;
 using RevisorPrs.Servicio;
 
@@ -227,5 +230,14 @@ public class WorkerSondeoTests
             Interlocked.Increment(ref _salidas);
             Interlocked.Decrement(ref _entradasEnVuelo);
         }
+    
+    /// <summary>Pull requests revisados por aviso de webhook (C2).</summary>
+    public List<PullRequest> RevisadosPorAviso { get; } = new();
+
+    public Task RevisarPrAsync(PullRequest pr, CancellationToken cancelacion)
+    {
+        RevisadosPorAviso.Add(pr);
+        return Task.CompletedTask;
     }
+}
 }
