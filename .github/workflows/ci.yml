@@ -1,0 +1,54 @@
+name: CI
+
+# Los defectos que llegaron a main —incluido uno que impedía arrancar el servicio—
+# habrían saltado en el primer push. Este flujo compila y ejecuta la suite completa
+# en cada push y en cada pull request contra main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  construir-y-probar:
+    name: Compilar y probar
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar el SDK de .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restaurar dependencias
+        run: dotnet restore RevisorPrs.sln
+
+      # Los avisos se tratan como errores: el proyecto está hoy en cero avisos y
+      # queremos enterarnos el día que deje de estarlo, no acumularlos en silencio.
+      - name: Compilar
+        run: dotnet build RevisorPrs.sln --configuration Release --no-restore -warnaserror
+
+      - name: Ejecutar las pruebas
+        run: >
+          dotnet test RevisorPrs.sln
+          --configuration Release
+          --no-build
+          --verbosity normal
+          --logger "trx;LogFileName=resultados.trx"
+          --results-directory ./resultados
+
+      - name: Publicar los resultados
+        # Interesa sobre todo cuando las pruebas fallan.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultados-de-pruebas
+          path: ./resultados
+          retention-days: 14
