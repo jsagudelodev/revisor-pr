@@ -2,7 +2,12 @@
 
 De prototipo que no arrancaba a revisor que un equipo puede dejar encendido.
 
-**Estado: 21 de 21 completados.** La suite pasó de 107 a 328 pruebas.
+**Estado: 21 completados, 4 pendientes.** La suite pasó de 107 a 328 pruebas.
+
+> **La herramienta todavía no ha revisado ningún pull request real.** Todo lo cerrado
+> aquí es maquinaria: que arranque, que no repita, que no comente ruido, que resista que
+> la manipulen, que enseñe lo que gasta. La calidad de los hallazgos —que es de lo que
+> depende que el equipo la use— sigue sin medir. Ver [Pendiente](#pendiente).
 
 El detalle de cada decisión, incluidos los cambios de opinión a mitad de camino, está
 en [`docs/bitacora.md`](docs/bitacora.md).
@@ -13,6 +18,7 @@ en [`docs/bitacora.md`](docs/bitacora.md).
 | [P1](#p1--calidad-de-la-revisión) | Que además acierte | 4 / 4 |
 | [P2](#p2--operación) | Mantenerlo encendido y saber qué hace | 5 / 5 |
 | [P3](#p3--deuda-técnica) | Trampas para quien toque el código después | 7 / 7 |
+| [Pendiente](#pendiente) | Saber si revisa bien, y poner freno al gasto | 0 / 4 |
 
 Antes de empezar el backlog hubo cinco defectos que impedían usarlo:
 
@@ -248,6 +254,54 @@ sin usar) y variables de entorno en producción.
 
 ---
 
+## Pendiente
+
+Salió de revisar el resultado tras cerrar las cuatro bandas. Lo de arriba deja la
+herramienta bien construida; esto es lo que falta para saber si además es **buena**.
+
+### V1 · Piloto contra pull requests reales
+
+**El servicio no ha revisado nunca un pull request de verdad.** Todas las llamadas al
+modelo durante el desarrollo fueron contra dobles de prueba, y las ejecuciones reales
+usaron `api.ejemplo.invalid` y credenciales falsas que devolvían 401.
+
+Eso significa que la tasa de falsos positivos y la utilidad de los comentarios están
+**sin medir**. Todo el valor del producto descansa en el prompt, y el prompt se ha
+razonado pero nunca se ha visto funcionar.
+
+Un repositorio, credenciales reales, un modelo real, `Llm:SeveridadAnclada` en `error` y
+unos días de pull requests normales. Después, leer los comentarios y contar cuántos eran
+útiles. Si de diez hallazgos hay siete razonables, hay producto; si hay tres, el problema
+está en el prompt y ninguna cantidad de fontanería lo arregla.
+
+**Es el ítem de más valor del backlog.** Dice más que los siguientes cinco juntos.
+
+### V2 · Freno de gasto, no solo visibilidad
+
+C3 hizo visible el coste, pero nada lo detiene. Con visibilidad y sin tope, la factura
+sorpresa llega igual, solo que documentada.
+
+Un presupuesto por periodo que, al agotarse, deje de llamar al modelo y lo diga en
+`/estado` y en el log, en vez de seguir gastando en silencio.
+
+### V3 · Marcar un hallazgo como incorrecto
+
+El equipo no tiene forma de decir que un comentario estaba mal. Sin eso no hay manera de
+medir la precisión ni de mejorarla salvo a ojo, y V1 se queda en una impresión en lugar
+de en un número.
+
+Lo más barato que funciona: una reacción o una palabra convenida en la respuesta al
+comentario, que el servicio lea y contabilice.
+
+### V4 · Confirmar la cabecera de firma del webhook
+
+El nombre y el formato de la cabecera HMAC dependen de la versión de Bitbucket, y no se
+ha podido verificar contra una instalación real. Es configurable en
+`Webhook:CabeceraFirma` y el token en `Authorization: Bearer` funciona en cualquier caso,
+pero mientras no se confirme, el camino HMAC no es de fiar.
+
+---
+
 ## Cómo se verificó
 
 Cada arreglo se comprobó **revirtiéndolo** para ver fallar sus tests. Los que describen
@@ -258,3 +312,6 @@ los fallos de listado.
 Tres tests afirmaban comportamientos que se cambiaron a propósito (D1, la severidad
 desconocida y el hallazgo sin línea sobre un archivo ajeno). Se reescribieron explicando
 el porqué en el propio test, no se ajustaron en silencio.
+
+Nada de esto valida la **calidad de las revisiones**: las pruebas comprueban que la
+tubería hace lo que debe con hallazgos de mentira. Para lo otro está V1.
